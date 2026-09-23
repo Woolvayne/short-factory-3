@@ -3,6 +3,8 @@
  * API keys are never sent anywhere except the matching LLM endpoint.
  */
 
+import type { IntroAnimation, IntroTheme } from "./intro";
+
 export type StoryStyle =
   | "aita"
   | "revenge"
@@ -59,6 +61,22 @@ export interface Settings {
   clipSkipOutro: number;
   clipLengthMode: "auto" | "fixed";
   clipFixedLength: number;
+
+  /* ---- reddit story intro (erste X Sekunden im Video) ---- */
+  introOn: boolean;
+  introTitleMode: "idea" | "custom";
+  introTitle: string;
+  introSubreddit: string;
+  introAuthor: string;
+  introUpvotes: number;
+  introAgeLabel: string;
+  introDuration: number;    // seconds the card is visible (default 3)
+  introTheme: IntroTheme;
+  introAnimation: IntroAnimation;
+  introPosY: number;        // 0.1 … 0.8 of height
+  introTitleScale: number;  // title font size as a fraction of width
+  introDim: number;         // backdrop dimming 0 … 0.7
+  introShowStats: boolean;
 }
 
 const STORE_KEY = "shortsfactory.settings.v3";
@@ -100,6 +118,21 @@ export const DEFAULT_SETTINGS: Settings = {
   clipSkipOutro: 5,
   clipLengthMode: "auto",
   clipFixedLength: 35,
+
+  introOn: true,
+  introTitleMode: "idea",
+  introTitle: "",
+  introSubreddit: "r/AmItheAsshole",
+  introAuthor: "u/Throwaway_42",
+  introUpvotes: 15400,
+  introAgeLabel: "12 Std.",
+  introDuration: 3,
+  introTheme: "dark",
+  introAnimation: "fly-up",
+  introPosY: 0.36,
+  introTitleScale: 0.058,
+  introDim: 0.34,
+  introShowStats: true,
 };
 
 export function loadSettings(): Settings {

@@ -4,6 +4,7 @@ import {
   Clapperboard,
   Eye,
   EyeOff,
+  MessageSquare,
   Mic,
   RotateCcw,
   Scissors,
@@ -12,7 +13,9 @@ import {
   Trash2,
 } from "lucide-react";
 import Section from "./Section";
+import IntroPreview from "./IntroPreview";
 import { ColorSwatches, Field, Segmented, Slider, Toggle } from "./Controls";
+import { INTRO_ANIMATIONS, INTRO_THEMES, formatCompact, type IntroAnimation, type IntroTheme } from "../lib/intro";
 import {
   CAPTION_PRESETS,
   DEFAULT_SETTINGS,
@@ -27,12 +30,13 @@ import {
 } from "../lib/settings";
 import { cn } from "../utils/cn";
 
-type Tab = "ai" | "voice" | "captions" | "video" | "clips";
+type Tab = "ai" | "voice" | "captions" | "intro" | "video" | "clips";
 
 const TABS: { id: Tab; label: string; icon: typeof Sparkles }[] = [
   { id: "ai", label: "AI", icon: Sparkles },
   { id: "voice", label: "VOICE", icon: Mic },
   { id: "captions", label: "CAPTIONS", icon: Captions },
+  { id: "intro", label: "INTRO", icon: MessageSquare },
   { id: "video", label: "VIDEO", icon: Clapperboard },
   { id: "clips", label: "CLIPS", icon: Scissors },
 ];
@@ -599,6 +603,198 @@ export default function SettingsPanel({
               <p className="font-mono text-[10px] leading-relaxed text-coal-400">
                 THESE SETTINGS DRIVE THE CLIP MILL IN STEP 02 — CHANGE THEM AND HIT RE-SLICE TO
                 REDEAL ALL TEN WINDOWS.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------- INTRO */}
+      {tab === "intro" && (
+        <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
+          <div className="grid content-start gap-3">
+            <Toggle
+              label="REDDIT-STORY INTRO"
+              sub="titel-card fliegt über die ersten sekunden des videos ein"
+              checked={settings.introOn}
+              disabled={disabled}
+              onChange={(v) => set("introOn", v)}
+            />
+
+            <Field label="TITEL-QUELLE" hint="DER TITEL IST PRO VIDEO ODER FEST EINSTELLBAR">
+              <Segmented<"idea" | "custom">
+                columns={2}
+                disabled={disabled}
+                value={settings.introTitleMode}
+                onChange={(v) => set("introTitleMode", v)}
+                options={[
+                  { id: "idea", label: "IDEA-FELD", sub: "10 verschiedene Titel" },
+                  { id: "custom", label: "FESTER TITEL", sub: "für alle 10 gleich" },
+                ]}
+              />
+            </Field>
+
+            <Field
+              label="EIGENER TITEL"
+              hint={
+                settings.introTitleMode === "custom"
+                  ? "STEHT AUF JEDER KARTE — MAX. 5 ZEILEN, DER REST ENDET MIT …"
+                  : "FALLBACK, FALLS EIN IDEA-FELD LEER IST"
+              }
+            >
+              <input
+                type="text"
+                value={settings.introTitle}
+                disabled={disabled}
+                onChange={(e) => set("introTitle", e.target.value)}
+                placeholder="AITA for leaving my sister's wedding after what she said?"
+                className="sf-input w-full border border-coal-700/80 bg-coal-850 px-3 py-2.5 font-mono text-[11.5px] leading-relaxed text-paper-100 placeholder:text-coal-600 focus:border-volt-400/70 focus:outline-none disabled:opacity-50"
+              />
+            </Field>
+
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="SUBREDDIT">
+                <input
+                  type="text"
+                  value={settings.introSubreddit}
+                  disabled={disabled}
+                  onChange={(e) => set("introSubreddit", e.target.value)}
+                  placeholder="r/AmItheAsshole"
+                  className="sf-input w-full border border-coal-700/80 bg-coal-850 px-3 py-2.5 font-mono text-[11.5px] text-paper-100 placeholder:text-coal-600 focus:border-volt-400/70 focus:outline-none disabled:opacity-50"
+                />
+              </Field>
+              <Field label="ALTER-LABEL">
+                <input
+                  type="text"
+                  value={settings.introAgeLabel}
+                  disabled={disabled}
+                  onChange={(e) => set("introAgeLabel", e.target.value)}
+                  placeholder="12 Std."
+                  className="sf-input w-full border border-coal-700/80 bg-coal-850 px-3 py-2.5 font-mono text-[11.5px] text-paper-100 placeholder:text-coal-600 focus:border-volt-400/70 focus:outline-none disabled:opacity-50"
+                />
+              </Field>
+            </div>
+
+            <Field label="AUTOR">
+              <input
+                type="text"
+                value={settings.introAuthor}
+                disabled={disabled}
+                onChange={(e) => set("introAuthor", e.target.value)}
+                placeholder="u/Throwaway_42"
+                className="sf-input w-full border border-coal-700/80 bg-coal-850 px-3 py-2.5 font-mono text-[11.5px] text-paper-100 placeholder:text-coal-600 focus:border-volt-400/70 focus:outline-none disabled:opacity-50"
+              />
+            </Field>
+
+            <Field
+              label="UPVOTES"
+              value={formatCompact(settings.introUpvotes)}
+              hint="ZÄHLT BEIM EINFLIEGEN SICHTBAR HOCH"
+            >
+              <Slider
+                min={100}
+                max={250000}
+                step={100}
+                value={settings.introUpvotes}
+                disabled={disabled || !settings.introOn}
+                onChange={(v) => set("introUpvotes", v)}
+              />
+            </Field>
+
+            <Field
+              label="DAUER IM VIDEO"
+              value={`${settings.introDuration.toFixed(1)} s`}
+              hint="STANDARD: DIE ERSTEN 3 SEKUNDEN"
+            >
+              <Slider
+                min={1}
+                max={8}
+                step={0.5}
+                value={settings.introDuration}
+                disabled={disabled || !settings.introOn}
+                onChange={(v) => set("introDuration", v)}
+              />
+            </Field>
+
+            <Field label="FLUG-BEWEGUNG">
+              <Segmented<IntroAnimation>
+                columns={3}
+                disabled={disabled || !settings.introOn}
+                value={settings.introAnimation}
+                onChange={(v) => set("introAnimation", v)}
+                options={INTRO_ANIMATIONS}
+              />
+            </Field>
+
+            <Field label="KARTEN-LOOK">
+              <Segmented<IntroTheme>
+                columns={2}
+                disabled={disabled || !settings.introOn}
+                value={settings.introTheme}
+                onChange={(v) => set("introTheme", v)}
+                options={INTRO_THEMES}
+              />
+            </Field>
+
+            <Field label="POSITION" value={`${Math.round(settings.introPosY * 100)}% VON OBEN`}>
+              <Slider
+                min={0.12}
+                max={0.8}
+                step={0.01}
+                value={settings.introPosY}
+                disabled={disabled || !settings.introOn}
+                onChange={(v) => set("introPosY", v)}
+              />
+            </Field>
+
+            <Field
+              label="TITELGRÖSSE"
+              value={`${(settings.introTitleScale * 100).toFixed(1)}% DER BREITE`}
+            >
+              <Slider
+                min={0.035}
+                max={0.09}
+                step={0.002}
+                value={settings.introTitleScale}
+                disabled={disabled || !settings.introOn}
+                onChange={(v) => set("introTitleScale", v)}
+              />
+            </Field>
+
+            <Field label="HINTERGRUND ABDUNKELN" value={`${Math.round(settings.introDim * 100)}%`}>
+              <Slider
+                min={0}
+                max={0.7}
+                step={0.02}
+                value={settings.introDim}
+                disabled={disabled || !settings.introOn}
+                onChange={(v) => set("introDim", v)}
+              />
+            </Field>
+
+            <Toggle
+              label="UPVOTES + KOMMENTARE ANZEIGEN"
+              sub="pfeil, zähler und kommentar-blase unter dem titel"
+              checked={settings.introShowStats}
+              disabled={disabled || !settings.introOn}
+              onChange={(v) => set("introShowStats", v)}
+            />
+          </div>
+
+          <div className="grid content-start gap-3">
+            <IntroPreview
+              settings={settings}
+              title={
+                settings.introTitleMode === "custom" && settings.introTitle.trim()
+                  ? settings.introTitle.trim()
+                  : "AITA for walking out of my sister's wedding after the toast she made about my daughter?"
+              }
+            />
+            <div className="border border-coal-700/80 bg-coal-850/60 px-3 py-2.5">
+              <p className="font-mono text-[10px] leading-relaxed text-coal-400">
+                DAS INTRO WIRD DIREKT IN DEN CANVAS-RENDER GEZEICHNET — ES IST ALSO FEST IM VIDEO
+                EINGEBRANNT (KEIN OVERLAY, KEIN SCHNITT). DIE CAPTIONS LAUFEN DARUNTER WEITER, DIE
+                KARTE LIEGT DARÜBER.
               </p>
             </div>
           </div>

@@ -83,3 +83,41 @@ export function stageIndex(status: RenderStage): number {
       return -1;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/*  Zernio-Versand (kein Kalender — nur Status pro Unit)                */
+/* ------------------------------------------------------------------ */
+
+export type ShipStatus =
+  | "idle"
+  | "queued"
+  | "uploading"
+  | "publishing"
+  | "waiting"
+  | "sent"
+  | "error";
+
+export interface ShipState {
+  status: ShipStatus;
+  /** Upload-Fortschritt 0 … 1 */
+  progress: number;
+  postId?: string | null;
+  /** Zernio-Status: draft · scheduled · publishing · published · failed · partial */
+  zernioStatus?: string;
+  /** "SOFORT" · "HEUTE 20:00" · "MORGEN 06:00" … */
+  slotLabel?: string;
+  scheduledFor?: string | null;
+  error?: string;
+  sentAt?: string;
+}
+
+export interface ShipLogEntry {
+  index: number;
+  idea: string;
+  filename: string;
+  slotLabel: string;
+  postId: string | null;
+  zernioStatus: string;
+  error?: string;
+  at: string;
+}

@@ -16,4 +16,10 @@ export default defineConfig({
       "@": path.resolve(__dirname, "src"),
     },
   },
+  server: {
+    host: true,
+    port: 5173,
+    /* Preview-Proxies (z. B. *.e2b.app) dürfen den Devserver einbetten. */
+    allowedHosts: [".e2b.app", "localhost", "127.0.0.1"],
+  },
 });

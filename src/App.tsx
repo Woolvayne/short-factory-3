@@ -8,7 +8,9 @@ import {
   FileArchive,
   HardDrive,
   Mic,
+  MessageSquare,
   Radio,
+  Rocket,
   ShieldCheck,
   Wifi,
 } from "lucide-react";
@@ -53,6 +55,23 @@ import {
   type ClipPlan,
   type ClipSource,
 } from "./lib/clips";
+import { introOptionsFor } from "./lib/intro";
+import { gateEnabled, isUnlocked, lock as lockGate, unlock as unlockGate } from "./lib/gate";
+import {
+  SHIP_GAP_MS,
+  computeSlots,
+  fetchZernioStatus,
+  loadShipConfig,
+  saveShipConfig,
+  shipFileName,
+  shipGap,
+  shipVideo,
+  type ShipConfig,
+  type ZernioStatus,
+} from "./lib/zernio";
+import PasswordGate from "./components/PasswordGate";
+import ShipPanel, { IDLE_SHIP_RUN, type ShipRun } from "./components/ShipPanel";
+import type { ShipLogEntry, ShipState } from "./lib/types";
 
 const INITIAL_IDEAS = Array.from({ length: 10 }, () => "");
 const IDLE_ZIP: ZipState = {
@@ -74,7 +93,7 @@ const IDLE_FETCH: FetchState = {
 
 type AnyAudioContext = typeof AudioContext;
 
-export default function App() {
+function Factory({ onLock }: { onLock?: () => void }) {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [ideas, setIdeas] = useState<string[]>(INITIAL_IDEAS);
 
@@ -98,6 +117,14 @@ export default function App() {
   const [ideaGenAll, setIdeaGenAll] = useState(false);
   const [ideaGenIndex, setIdeaGenIndex] = useState<number | null>(null);
 
+  /* zernio versand */
+  const [shipCfg, setShipCfg] = useState<ShipConfig>(() => loadShipConfig());
+  const [shipStatus, setShipStatus] = useState<ZernioStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [shipStates, setShipStates] = useState<Record<number, ShipState>>({});
+  const [shipRun, setShipRun] = useState<ShipRun>(IDLE_SHIP_RUN);
+  const [shipLog, setShipLog] = useState<ShipLogEntry[]>([]);
+
   const bgsRef = useRef(bgs);
   bgsRef.current = bgs;
   const itemsRef = useRef<LocalRenderItem[]>([]);
@@ -111,8 +138,19 @@ export default function App() {
   const startedAtRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
   const cancelRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+  const shipCfgRef = useRef(shipCfg);
+  shipCfgRef.current = shipCfg;
+  const shipStatesRef = useRef<Record<number, ShipState>>({});
+  shipStatesRef.current = shipStates;
+  const zernioStatusRef = useRef<ZernioStatus | null>(null);
+  const pendingShipRef = useRef<LocalRenderItem[]>([]);
+  const shipRunningRef = useRef(false);
+  const cancelShipRef = useRef<{ cancelled: boolean }>({ cancelled: false });
+  const shipDoneRef = useRef(0);
+  const shipTotalRef = useRef(0);
 
   useEffect(() => saveSettings(settings), [settings]);
+  useEffect(() => saveShipConfig(shipCfg), [shipCfg]);
 
   const busy = phase === "preparing" || phase === "rendering";
 
@@ -385,6 +423,14 @@ export default function App() {
       status: "script",
     }));
     setItems(seeded);
+    /* neuer Durchlauf → alte Versand-Stände verwerfen */
+    cancelShipRef.current.cancelled = true;
+    pendingShipRef.current = [];
+    shipDoneRef.current = 0;
+    shipTotalRef.current = 0;
+    setShipStates({});
+    setShipLog([]);
+    setShipRun(IDLE_SHIP_RUN);
     await ensureAudioCtx();
 
     const cfg = {
@@ -474,6 +520,7 @@ export default function App() {
         patchItem(index, { status: "rendering", error: undefined });
 
         try {
+          const ideaForUnit = itemsRef.current.find((i) => i.index === index)?.idea ?? "";
           const result = await renderLocal({
             bgUrl: useUrl,
             clipStart: mode === "single" ? (clip?.start ?? 0) : Math.random() * 3,
@@ -484,6 +531,8 @@ export default function App() {
             height,
             audioCtx: ac,
             settings,
+            /* Reddit-Story-Intro: fliegt in den ersten Sekunden ein */
+            intro: introOptionsFor({ idea: ideaForUnit }, settings),
             signal: cancelRef.current,
             onProgress: setActiveProgress,
           });
@@ -596,6 +645,209 @@ export default function App() {
     }
   }, [zip.active]);
 
+  /* ------------------------------------------------------------ */
+  /*  Zernio-Versandweg — einzeln oder alle 10, immer 3 s Takt     */
+  /* ------------------------------------------------------------ */
+
+  const patchShip = useCallback((index: number, patch: Partial<ShipState>) => {
+    setShipStates((prev) => {
+      const base: ShipState = prev[index] ?? { status: "idle", progress: 0 };
+      return { ...prev, [index]: { ...base, ...patch } };
+    });
+  }, []);
+
+  const pushShipRun = useCallback((extra?: Partial<ShipRun>) => {
+    setShipRun((r) => ({
+      ...r,
+      done: shipDoneRef.current,
+      total: Math.max(shipTotalRef.current, shipDoneRef.current + pendingShipRef.current.length),
+      pending: pendingShipRef.current.length,
+      ...extra,
+    }));
+  }, []);
+
+  const refreshZernioStatus = useCallback(async () => {
+    setStatusLoading(true);
+    try {
+      const status = await fetchZernioStatus();
+      zernioStatusRef.current = status;
+      setShipStatus(status);
+    } finally {
+      setStatusLoading(false);
+    }
+  }, []);
+
+  /* einmal beim Start: ist der Key gesetzt, welche Accounts sind verbunden? */
+  useEffect(() => {
+    void refreshZernioStatus();
+  }, [refreshZernioStatus]);
+
+  const runShipQueue = useCallback(async () => {
+    if (shipRunningRef.current) return;
+    shipRunningRef.current = true;
+    cancelShipRef.current = { cancelled: false };
+    shipDoneRef.current = 0;
+    shipTotalRef.current = pendingShipRef.current.length;
+    pushShipRun({ active: true, currentIndex: null, waitMs: 0, error: null });
+
+    let dispatched = 0;
+
+    try {
+      let status = zernioStatusRef.current;
+      if (!status || !status.ok || !status.configured) {
+        status = await fetchZernioStatus();
+        zernioStatusRef.current = status;
+        setShipStatus(status);
+      }
+      if (!status.configured) {
+        throw new Error(
+          status.error ??
+            "ZERNIO_API_KEY fehlt — in Vercel setzen und neu deployen (siehe docs/ANLEITUNG.md)."
+        );
+      }
+      if (status.accounts.length === 0) {
+        throw new Error(
+          "Zernio-Key ist gesetzt, aber kein Social-Account verbunden → zernio.com/dashboard → Accounts verbinden."
+        );
+      }
+
+      while (pendingShipRef.current.length > 0) {
+        if (cancelShipRef.current.cancelled) break;
+        const item = pendingShipRef.current.shift()!;
+        pushShipRun({ active: true, currentIndex: item.index });
+
+        /* Pflicht-Pause: zwischen JEDEM Video exakt 3 Sekunden warten */
+        if (dispatched > 0) {
+          patchShip(item.index, { status: "waiting" });
+          const cancelled = await shipGap(
+            SHIP_GAP_MS,
+            (ms) => pushShipRun({ waitMs: ms }),
+            () => cancelShipRef.current.cancelled
+          );
+          pushShipRun({ waitMs: 0 });
+          if (cancelled) {
+            patchShip(item.index, { status: "idle", progress: 0 });
+            break;
+          }
+        }
+
+        const cfg = shipCfgRef.current;
+        const needed = dispatched + pendingShipRef.current.length + 2;
+        const slotList = computeSlots(cfg, Math.max(12, needed));
+        const slot =
+          slotList[Math.min(dispatched, Math.max(0, slotList.length - 1))] ?? {
+            ms: null,
+            wall: null,
+            label: "SOFORT",
+          };
+        dispatched += 1;
+
+        patchShip(item.index, {
+          status: "uploading",
+          progress: 0,
+          error: undefined,
+          slotLabel: slot.label,
+        });
+
+        try {
+          const result = await shipVideo(item, cfg, {
+            slot,
+            onStage: (stage) => patchShip(item.index, { status: stage }),
+            onProgress: (ratio) => patchShip(item.index, { progress: ratio }),
+          });
+          patchShip(item.index, {
+            status: "sent",
+            progress: 1,
+            postId: result.postId,
+            zernioStatus: result.status,
+            scheduledFor: result.scheduledFor,
+            slotLabel: slot.label,
+            sentAt: new Date().toISOString(),
+            error: undefined,
+          });
+          setShipLog((prev) =>
+            [
+              {
+                index: item.index,
+                idea: item.idea,
+                filename: shipFileName(item),
+                slotLabel: slot.label,
+                postId: result.postId,
+                zernioStatus: result.status,
+                at: new Date().toISOString(),
+              },
+              ...prev,
+            ].slice(0, 30)
+          );
+        } catch (e) {
+          patchShip(item.index, {
+            status: "error",
+            error: String(e instanceof Error ? e.message : e).slice(0, 220),
+            slotLabel: slot.label,
+          });
+        }
+
+        shipDoneRef.current += 1;
+        pushShipRun({ currentIndex: item.index });
+      }
+    } catch (e) {
+      const message = String(e instanceof Error ? e.message : e).slice(0, 240);
+      for (const queued of pendingShipRef.current) patchShip(queued.index, { status: "error", error: message });
+      pendingShipRef.current = [];
+      pushShipRun({ error: message });
+    } finally {
+      shipRunningRef.current = false;
+      pushShipRun({
+        active: false,
+        currentIndex: null,
+        waitMs: 0,
+        pending: pendingShipRef.current.length,
+      });
+    }
+  }, [patchShip, pushShipRun]);
+
+  const enqueueShip = useCallback(
+    (targets: LocalRenderItem[]) => {
+      const inFlight: ShipState["status"][] = ["queued", "uploading", "publishing", "waiting"];
+      const ready = targets.filter((t) => t.status === "done" && t.blob);
+      const fresh = ready.filter((t) => {
+        if (pendingShipRef.current.some((queued) => queued.index === t.index)) return false;
+        const state = shipStatesRef.current[t.index]?.status;
+        return !state || !inFlight.includes(state);
+      });
+      if (fresh.length === 0) return;
+      cancelShipRef.current = { cancelled: false };
+      for (const item of fresh) patchShip(item.index, { status: "queued", progress: 0, error: undefined });
+      pendingShipRef.current.push(...fresh);
+      shipTotalRef.current += fresh.length;
+      pushShipRun({ active: true, error: null });
+      void runShipQueue();
+    },
+    [patchShip, pushShipRun, runShipQueue]
+  );
+
+  const shipOne = useCallback(
+    (index: number) => {
+      const item = itemsRef.current.find((i) => i.index === index);
+      if (item) enqueueShip([item]);
+    },
+    [enqueueShip]
+  );
+
+  const shipAll = useCallback(() => {
+    const targets = itemsRef.current.filter(
+      (i) => i.status === "done" && shipStatesRef.current[i.index]?.status !== "sent"
+    );
+    enqueueShip(targets.length ? targets : itemsRef.current.filter((i) => i.status === "done"));
+  }, [enqueueShip]);
+
+  const cancelShip = useCallback(() => {
+    cancelShipRef.current.cancelled = true;
+    for (const queued of pendingShipRef.current) patchShip(queued.index, { status: "idle", progress: 0 });
+    pendingShipRef.current = [];
+    pushShipRun({ pending: 0, waitMs: 0 });
+  }, [patchShip, pushShipRun]);
+
   const doneCount = items.filter((r) => r.status === "done").length;
   const errorCount = items.filter((r) => r.status === "error").length;
   const stagedCount = items.filter((r) => r.status === "staged").length;
@@ -612,7 +864,12 @@ export default function App() {
       </div>
       <div className="animate-pulse-heat pointer-events-none absolute -top-40 left-1/2 h-[420px] w-[820px] -translate-x-1/2 rounded-full bg-[radial-gradient(ellipse_at_center,rgba(255,138,31,0.16),transparent_68%)] blur-2xl" />
 
-      <Header phase={phase} keyed={keyed} />
+      <Header
+        phase={phase}
+        keyed={keyed}
+        zernioReady={Boolean(shipStatus?.configured && shipStatus.accounts.length > 0)}
+        onLock={onLock}
+      />
 
       <main
         className="relative z-10 mx-auto max-w-[1500px] px-4 pb-16 sm:px-6"
@@ -646,8 +903,10 @@ export default function App() {
               { icon: Cpu, k: "SCRIPT LINES", v: keyed ? "QWEN / MISTRAL · DIRECT" : "OFFLINE WRITER" },
               { icon: Mic, k: "VOICE BENCH", v: "EDGE READ-ALOUD · WEBSOCKET" },
               { icon: Captions, k: "CAPTION JIG", v: "WORD-BOUNDARY TIMINGS" },
+              { icon: MessageSquare, k: "STORY INTRO", v: `REDDIT CARD · ${settings.introOn ? `${settings.introDuration.toFixed(1)} s` : "AUS"}` },
               { icon: Clapperboard, k: "RENDER MILL", v: "CANVAS + MEDIARECORDER" },
               { icon: FileArchive, k: "DISPATCH", v: "JSZIP → BLOB ANCHOR" },
+              { icon: Rocket, k: "VERSAND", v: shipStatus?.configured ? "ZERNIO API · 3 s TAKT" : "ZERNIO · KEY FEHLT" },
             ].map(({ icon: Icon, k, v }) => (
               <div
                 key={k}
@@ -747,6 +1006,27 @@ export default function App() {
             activeProgress={activeProgress}
             onBuildZip={buildZip}
             onRenderOne={renderOne}
+            onShipOne={shipOne}
+            shipStates={shipStates}
+            shipBusy={busy || shipRun.active}
+          />
+        </div>
+
+        <div className="mt-5">
+          <ShipPanel
+            cfg={shipCfg}
+            onCfgChange={setShipCfg}
+            status={shipStatus}
+            statusLoading={statusLoading}
+            onRefreshStatus={() => void refreshZernioStatus()}
+            items={items}
+            shipStates={shipStates}
+            run={shipRun}
+            onShipAll={shipAll}
+            onShipOne={shipOne}
+            onCancelShip={cancelShip}
+            log={shipLog}
+            busy={busy}
           />
         </div>
 
@@ -766,10 +1046,45 @@ export default function App() {
             </span>
           </div>
           <p className="font-mono text-[9.5px] tracking-wider text-coal-500">
-            SHORTSFACTORY v3 · CLIP MILL — NO SERVER · NO FFMPEG · NO MERCY
+            SHORTSFACTORY v3 · CLIP MILL — NO FFMPEG · ZERNIO VERSAND · NO MERCY
           </p>
         </footer>
       </main>
+
+
+      {shipRun.active && !busy && (
+        <div
+          className="fixed bottom-4 left-1/2 z-40 w-[min(560px,calc(100%-2rem))] -translate-x-1/2 border border-volt-400/50 bg-coal-950/95 px-4 py-2.5 shadow-[0_20px_60px_-30px_rgba(239,47,36,0.9)] backdrop-blur"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="flex min-w-0 items-center gap-2">
+              <span className="inline-block size-1.5 animate-led rounded-full bg-volt-400 text-volt-400" />
+              <span className="truncate font-mono text-[10px] font-bold tracking-[0.18em] text-volt-300">
+                ZERNIO {shipRun.done}/{shipRun.total}
+                {shipRun.currentIndex !== null
+                  ? ` · UNIT ${String(shipRun.currentIndex + 1).padStart(2, "0")}`
+                  : ""}
+                {shipRun.waitMs > 0 ? ` · PAUSE ${(shipRun.waitMs / 1000).toFixed(1)}s` : ""}
+              </span>
+            </span>
+            <button
+              type="button"
+              onClick={cancelShip}
+              className="border border-coal-600 px-2.5 py-1 font-mono text-[9px] font-bold tracking-widest text-coal-300 hover:border-rose-err hover:text-rose-err"
+            >
+              STOP
+            </button>
+          </div>
+          <div className="mt-2 h-1 w-full overflow-hidden bg-coal-800">
+            <div
+              className="h-full bg-volt-400 transition-[width] duration-300"
+              style={{ width: `${shipRun.total ? (shipRun.done / shipRun.total) * 100 : 0}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {busy && (
         <div
@@ -817,4 +1132,30 @@ export default function App() {
       )}
     </div>
   );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Onepage Passwort-Schutz (ohne Backend)                             */
+/*                                                                      */
+/*  Ist VITE_APP_PASSWORD_HASH bzw. VITE_APP_PASSWORD gesetzt, rendert   */
+/*  die App AUSSCHLIESSLICH die Passwort-Seite, bis das richtige         */
+/*  Passwort eingegeben wurde. Die Fabrik dahinter wird gar nicht erst   */
+/*  gemountet. Anleitung: docs/ANLEITUNG.md                             */
+/* ------------------------------------------------------------------ */
+
+export default function App() {
+  const [unlocked, setUnlocked] = useState<boolean>(() => !gateEnabled() || isUnlocked());
+
+  const handleUnlock = useCallback((token: string, remember: boolean) => {
+    unlockGate(token, remember);
+    setUnlocked(true);
+  }, []);
+
+  const handleLock = useCallback(() => {
+    lockGate();
+    setUnlocked(false);
+  }, []);
+
+  if (!unlocked) return <PasswordGate onUnlock={handleUnlock} />;
+  return <Factory onLock={gateEnabled() ? handleLock : undefined} />;
 }

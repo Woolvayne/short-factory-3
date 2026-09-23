@@ -37,6 +37,7 @@
   --animate-rise: rise 0.75s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-flick: flick 8s ease-in-out infinite;
   --animate-pulse-heat: pulseHeat 6s ease-in-out infinite;
+  --animate-shake: shake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
 }
 
 @keyframes marquee {
@@ -68,6 +69,13 @@
 @keyframes flick {
   0%, 100% { opacity: 0.018; }
   50% { opacity: 0.032; }
+}
+
+@keyframes shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-7px); }
+  40%, 60% { transform: translateX(7px); }
 }
 
 @keyframes pulseHeat {
@@ -433,4 +441,33 @@ button:disabled { cursor: not-allowed; }
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+/* Native Zeit-/Datumsfelder bleiben im dunklen Fabrik-Look bedienbar. */
+input[type="time"],
+input[type="datetime-local"],
+input[type="date"] {
+  -webkit-appearance: auto;
+  appearance: auto;
+  color-scheme: dark;
+}
+
+.sf-input {
+  min-height: 42px;
+  color-scheme: dark;
+}
+
+.sf-input::-webkit-calendar-picker-indicator,
+input[type="time"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  filter: invert(62%) sepia(64%) saturate(1200%) hue-rotate(344deg);
+  cursor: pointer;
+  opacity: 0.9;
+}
+
+.sf-input::-webkit-datetime-edit,
+input[type="time"]::-webkit-datetime-edit,
+input[type="datetime-local"]::-webkit-datetime-edit {
+  font-family: var(--font-mono);
+  letter-spacing: 0.06em;
+  color: var(--color-paper-100);
 }

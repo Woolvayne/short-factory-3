@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
-import { Calendar, Factory } from "lucide-react";
+import { Factory, Lock, Rocket } from "lucide-react";
 import { cn } from "../utils/cn";
 import type { Phase } from "../lib/types";
 
-function Led({ on, tone = "volt" }: { on: boolean; tone?: "volt" | "ember" }) {
+function Led({ on, tone = "volt" }: { on: boolean; tone?: "volt" | "ember" | "off" }) {
   return (
     <span
       className={cn(
         "inline-block size-1.5 rounded-full",
-        tone === "volt" ? "text-volt-400" : "text-ember-500",
+        tone === "volt" ? "text-volt-400" : tone === "ember" ? "text-ember-500" : "text-coal-600",
         on ? "animate-led bg-current" : "bg-coal-600"
       )}
     />
@@ -31,11 +31,13 @@ function Clock() {
 
 const MARQUEE_ITEMS = [
   "10 IDEAS IN — 10 SHORTS OUT",
+  "REDDIT-STORY INTRO · FLIEGT IN DEN ERSTEN 3 SEKUNDEN EIN",
   "AI-WRITTEN TITLES",
   "100 % IN-BROWSER",
   "EDGE READ-ALOUD WEBSOCKET VOICE",
   "WORD-SYNCED CAPTIONS",
   "CANVAS + MEDIARECORDER RENDER",
+  "ZERNIO VERSAND · 3 s TAKT",
   "YOUR FILES NEVER LEAVE THE DEVICE",
   "9:16 VERTICAL · SAFARI READY",
   "ZIP DELIVERY",
@@ -44,15 +46,15 @@ const MARQUEE_ITEMS = [
 export default function Header({
   phase,
   keyed,
-  activeView,
-  onViewChange,
-  scheduledCount,
+  zernioReady,
+  onLock,
 }: {
   phase: Phase;
   keyed: boolean;
-  activeView: "factory" | "calendar";
-  onViewChange: (view: "factory" | "calendar") => void;
-  scheduledCount: number;
+  /** ZERNIO_API_KEY gesetzt und mindestens ein Account verbunden */
+  zernioReady?: boolean;
+  /** nur gesetzt, wenn das Onepage-Passwort aktiv ist */
+  onLock?: () => void;
 }) {
   const running = phase === "preparing" || phase === "rendering";
   return (
@@ -68,49 +70,9 @@ export default function Header({
                 SHORTS<span className="text-heat">FACTORY</span>
               </div>
               <div className="mono-label mt-1 text-[9px] text-coal-400">
-                LOCAL VIDEO ASSEMBLY · v2
+                LOCAL VIDEO ASSEMBLY · v3
               </div>
             </div>
-          </div>
-
-          {/* Primary Navigation: Factory vs. Kalender */}
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => onViewChange("factory")}
-              className={cn(
-                "flex items-center gap-1.5 border px-3 py-1.5 font-mono text-[10px] font-bold tracking-widest transition-colors",
-                activeView === "factory"
-                  ? "bg-heat border-volt-400 text-coal-950"
-                  : "border-coal-700 bg-coal-850 text-coal-300 hover:border-coal-500"
-              )}
-            >
-              <Factory className="size-3.5" /> Factory
-            </button>
-            <button
-              type="button"
-              onClick={() => onViewChange("calendar")}
-              className={cn(
-                "flex items-center gap-1.5 border px-3 py-1.5 font-mono text-[10px] font-bold tracking-widest transition-colors",
-                activeView === "calendar"
-                  ? "bg-heat border-volt-400 text-coal-950"
-                  : "border-coal-700 bg-coal-850 text-coal-300 hover:border-coal-500"
-              )}
-            >
-              <Calendar className="size-3.5" /> 📅 Kalender
-              {scheduledCount > 0 && (
-                <span
-                  className={cn(
-                    "ml-1 rounded-full px-1.5 py-px font-mono text-[9px] font-bold",
-                    activeView === "calendar"
-                      ? "bg-coal-950 text-volt-300"
-                      : "bg-volt-400 text-coal-950"
-                  )}
-                >
-                  {scheduledCount}
-                </span>
-              )}
-            </button>
           </div>
 
           <div className="flex items-center gap-3 sm:gap-5">
@@ -118,6 +80,12 @@ export default function Header({
               <Led on={keyed} />
               <span className="mono-label text-[9px] text-coal-300">
                 {keyed ? "AI SCRIPT" : "OFFLINE SCRIPT"}
+              </span>
+            </div>
+            <div className="hidden items-center gap-2 lg:flex">
+              <Led on={Boolean(zernioReady)} tone={zernioReady ? "volt" : "off"} />
+              <span className="mono-label flex items-center gap-1 text-[9px] text-coal-300">
+                <Rocket className="size-3" /> ZERNIO
               </span>
             </div>
             <div className="hidden items-center gap-2 sm:flex">
@@ -128,6 +96,16 @@ export default function Header({
               <Led on={running} tone={running ? "ember" : "volt"} />
               <span className="mono-label text-[9px] text-coal-300">CANVAS REC</span>
             </div>
+            {onLock && (
+              <button
+                type="button"
+                onClick={onLock}
+                title="Fabrik wieder sperren"
+                className="flex items-center gap-1.5 border border-coal-700 bg-coal-850 px-2.5 py-1.5 font-mono text-[9px] font-bold tracking-widest text-coal-300 hover:border-volt-400 hover:text-volt-300"
+              >
+                <Lock className="size-3" /> SPERREN
+              </button>
+            )}
             <div className="hidden h-4 w-px bg-coal-700 md:block" />
             <div className="hidden md:block">
               <Clock />
