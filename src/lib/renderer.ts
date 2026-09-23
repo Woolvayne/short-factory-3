@@ -7,6 +7,7 @@
 import { buildCues, cueAt, type Cue, type WordTs } from "./tts";
 import type { Settings } from "./settings";
 import { resolveBitrate } from "./settings";
+import { drawRedditIntro, type IntroOptions } from "./intro";
 
 export interface RenderJobOptions {
   /** object URL of the background source (file blob or fetched remote blob) */
@@ -20,6 +21,8 @@ export interface RenderJobOptions {
   height: number;
   audioCtx: AudioContext;
   settings: Settings;
+  /** Reddit-Story-Intro für die ersten Sekunden — null/undefined = aus */
+  intro?: IntroOptions | null;
   onProgress?: (ratio: number) => void;
   signal?: { cancelled: boolean };
 }
@@ -47,7 +50,8 @@ export function pickMimeType(): string {
 
 export const recorderSupported = () => pickMimeType() !== "";
 
-function drawCaption(
+/** Wird auch von der Live-Vorschau (Settings → INTRO) benutzt. */
+export function drawCaption(
   ctx: CanvasRenderingContext2D,
   text: string,
   w: number,
@@ -131,7 +135,7 @@ function drawCover(
 }
 
 export async function renderLocal(opts: RenderJobOptions): Promise<LocalRenderResult> {
-  const { width: w, height: h, audioCtx: ac, settings: s } = opts;
+  const { width: w, height: h, audioCtx: ac, settings: s, intro } = opts;
 
   const mimeType = pickMimeType();
   if (!mimeType) {
@@ -276,6 +280,8 @@ export async function renderLocal(opts: RenderJobOptions): Promise<LocalRenderRe
         const cue = cueAt(cues, t);
         if (cue) drawCaption(ctx, cue.text, w, h, s);
       }
+      /* Titel-Card fliegt über die ersten `introDuration` Sekunden ein */
+      if (intro && t <= intro.duration + 0.05) drawRedditIntro(ctx, w, h, t, intro);
     };
 
     let raf = 0;

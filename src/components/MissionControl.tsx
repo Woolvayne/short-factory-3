@@ -22,9 +22,10 @@ import {
 } from "lucide-react";
 import Section from "./Section";
 import { cn } from "../utils/cn";
-import type { LocalRenderItem, Phase, RenderStage } from "../lib/types";
+import type { LocalRenderItem, Phase, RenderStage, ShipState } from "../lib/types";
 import { STAGES, stageIndex } from "../lib/types";
 import { formatBytes, formatClock, formatDuration } from "../lib/media";
+import { shipStateLabel } from "./ShipPanel";
 
 export interface ZipState {
   active: boolean;
@@ -343,7 +344,9 @@ export function OutputPanel({
   activeProgress,
   onBuildZip,
   onRenderOne,
-  onPostItems,
+  onShipOne,
+  shipStates,
+  shipBusy,
 }: {
   phase: Phase;
   items: LocalRenderItem[];
@@ -354,7 +357,10 @@ export function OutputPanel({
   activeProgress: number;
   onBuildZip: () => void;
   onRenderOne: (index: number) => void;
-  onPostItems: (targetItems: LocalRenderItem[]) => void;
+  /** einzelnes Video nach dem Rendern zu Zernio schicken */
+  onShipOne: (index: number) => void;
+  shipStates: Record<number, ShipState>;
+  shipBusy: boolean;
 }) {
   const [preview, setPreview] = useState<LocalRenderItem | null>(null);
   const doneCount = items.filter((r) => r.status === "done").length;
@@ -399,6 +405,7 @@ export function OutputPanel({
 
           const Icon = STAGE_ICONS[item.status] ?? Film;
           const isActive = activeIndex === item.index && item.status === "rendering";
+          const ship = shipStates[item.index];
 
           return (
             <div
@@ -524,6 +531,50 @@ export function OutputPanel({
                       </>
                     )}
                   </button>
+                )}
+
+                {/* Zernio-Versand: erst nachdem das Video gerendert ist */}
+                {item.status === "done" && (
+                  <button
+                    type="button"
+                    onClick={() => onShipOne(item.index)}
+                    disabled={shipBusy || ship?.status === "sent" || ship?.status === "uploading"}
+                    title={ship?.error ?? "Nach dem Rendern direkt zu Zernio senden"}
+                    className={cn(
+                      "flex min-h-[34px] w-full items-center justify-center gap-1.5 border px-2 py-1.5 font-mono text-[9.5px] font-bold tracking-widest transition-colors disabled:opacity-45",
+                      ship?.status === "sent"
+                        ? "border-volt-400/60 bg-volt-400/10 text-volt-300"
+                        : ship?.status === "error"
+                          ? "border-rose-err/60 bg-rose-err/10 text-rose-err"
+                          : ship && ship.status !== "idle"
+                            ? "border-ember-500/60 bg-ember-500/10 text-ember-400"
+                            : "border-coal-600 text-coal-300 hover:border-volt-400 hover:text-volt-300"
+                    )}
+                  >
+                    {ship?.status === "sent" ? (
+                      <Check className="size-3" strokeWidth={3} />
+                    ) : ship && (ship.status === "uploading" || ship.status === "publishing") ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Send className="size-3" strokeWidth={2.4} />
+                    )}
+                    {ship && ship.status !== "idle" ? shipStateLabel(ship) : "→ ZERNIO"}
+                  </button>
+                )}
+
+                {ship?.status === "uploading" && (
+                  <div className="h-1 w-full overflow-hidden bg-coal-800">
+                    <div
+                      className="h-full bg-volt-400 transition-[width] duration-300"
+                      style={{ width: `${Math.min(100, ship.progress * 100)}%` }}
+                    />
+                  </div>
+                )}
+
+                {ship?.status === "error" && ship.error && (
+                  <p className="line-clamp-2 font-mono text-[8.5px] leading-relaxed text-rose-err">
+                    {ship.error.slice(0, 140)}
+                  </p>
                 )}
               </div>
             </div>
