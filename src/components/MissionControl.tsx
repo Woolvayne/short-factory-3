@@ -137,7 +137,7 @@ export function AssemblyPanel({
               </span>
               <span className="mt-0.5 block font-mono text-[9.5px] leading-relaxed tracking-[0.14em] text-coal-400">
                 {canPrepare || busy
-                  ? "FAST STEP · NO VIDEO IS RENDERED YET"
+                  ? "50 S PAUSE BETWEEN VOICES · NO VIDEO IS RENDERED YET"
                   : blockers.join("  ·  ")}
               </span>
             </span>

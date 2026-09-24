@@ -13,7 +13,32 @@
  * no Supabase anon key, no environment configuration needed at all.
  */
 
+import { sleep } from "./media";
+
 const TTS_ENDPOINT = "/api/tts";
+
+/** Pflicht-Pause zwischen zwei Voice-Erzeugungen — exakt 50 Sekunden. */
+export const VOICE_GAP_MS = 50_000;
+
+/**
+ * Wartet die Pflicht-Pause zwischen zwei Videos ab und meldet den Countdown
+ * (100-ms-Schritte). Liefert `true`, abgebrochen wurde — dann endet die
+ * Schleife vorzeitig und der letzte Tick-Wert bleibt stehen (wie `shipGap`).
+ */
+export async function voiceGap(
+  ms: number = VOICE_GAP_MS,
+  onTick?: (remainingMs: number) => void,
+  isCancelled?: () => boolean
+): Promise<boolean> {
+  const step = 100;
+  for (let left = ms; left > 0; left -= step) {
+    if (isCancelled?.()) return true;
+    onTick?.(Math.max(0, left));
+    await sleep(Math.min(step, left));
+  }
+  onTick?.(0);
+  return Boolean(isCancelled?.());
+}
 
 export interface WordTs {
   text: string;

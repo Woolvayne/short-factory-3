@@ -108,8 +108,11 @@ Optimised for desktop **and** iPhone / iPad (iOS 17+ recommended).
 
 ### The three-button flow
 
-1. **① Prepare 10 scripts + voices** — fast step, writes every story and
-   synthesises every voice track. No video is rendered yet.
+1. **① Prepare 10 scripts + voices** — writes every story and synthesises every
+   voice track. Between **every two voice creations the factory waits exactly 50
+   seconds** (`VOICE_GAP_MS = 50_000`, one serialised lane — so Microsoft's
+   Edge Read-Aloud endpoint never sees back-to-back or parallel requests); the
+   countdown shows in the status bar as `VOICE PAUSE …s`. No video is rendered yet.
 2. **② Render** — renders every staged unit, or use the **RENDER** button on each
    individual card in the Output Bay. Done units get **RE-RENDER**, failed ones
    get **RETRY**. A **STOP** button in the status bar aborts a running batch.
