@@ -44,7 +44,7 @@ import {
   type Settings,
 } from "./lib/settings";
 import { generateIdeas, generateStory } from "./lib/llm";
-import { synthesizeSpeech } from "./lib/tts";
+import { VOICE_GAP_MS, synthesizeSpeech, voiceGap, type TtsResult } from "./lib/tts";
 import { recorderSupported, renderLocal } from "./lib/renderer";
 import {
   detectPlatform,
@@ -116,6 +116,8 @@ function Factory({ onLock }: { onLock?: () => void }) {
   const [activeProgress, setActiveProgress] = useState(0);
   const [ideaGenAll, setIdeaGenAll] = useState(false);
   const [ideaGenIndex, setIdeaGenIndex] = useState<number | null>(null);
+  /* laufender Countdown der 50-s-Pflichtpause zwischen zwei Voice-Erstellungen */
+  const [voiceWait, setVoiceWait] = useState(0);
 
   /* zernio versand */
   const [shipCfg, setShipCfg] = useState<ShipConfig>(() => loadShipConfig());
@@ -415,6 +417,7 @@ function Factory({ onLock }: { onLock?: () => void }) {
     cancelRef.current = { cancelled: false };
     startedAtRef.current = Date.now();
     setElapsed(0);
+    setVoiceWait(0);
     setPhase("preparing");
 
     const seeded: LocalRenderItem[] = ideas.map((idea, index) => ({
@@ -442,6 +445,37 @@ function Factory({ onLock }: { onLock?: () => void }) {
     };
 
     const queue = seeded.map((_, i) => i);
+
+    /* Pflicht-Pause: zwischen JEDEM Video (beim Voice-Erstellen) exakt
+       50 Sekunden warten. Beide Lanes laufen durch EINE Kette — die nächste
+       Synthese startet erst, wenn die vorherige fertig ist UND die Pause
+       gelaufen ist. Dadurch liegen die Voice-Erstellungen immer mindestens
+       VOICE_GAP_MS auseinander und nie parallel (Microsoft blockt
+       gleichzeitige Anfragen einer IP besonders gern). */
+    let voiceChain: Promise<unknown> = Promise.resolve();
+    let voicesMade = 0;
+    const createTake = (text: string): Promise<TtsResult | null> => {
+      const run = voiceChain.then(async () => {
+        if (cancelRef.current.cancelled) return null;
+        if (voicesMade > 0) {
+          const cancelled = await voiceGap(
+            VOICE_GAP_MS,
+            (ms) => setVoiceWait(ms),
+            () => cancelRef.current.cancelled
+          );
+          setVoiceWait(0);
+          if (cancelled || cancelRef.current.cancelled) return null;
+        }
+        voicesMade += 1;
+        return synthesizeSpeech(text, settings.voice, settings.rate, settings.pitch);
+      });
+      voiceChain = run.then(
+        () => undefined,
+        () => undefined
+      );
+      return run;
+    };
+
     const worker = async (lane: number) => {
       if (lane) await sleep(600);
       while (queue.length > 0) {
@@ -452,12 +486,8 @@ function Factory({ onLock }: { onLock?: () => void }) {
           const story = await generateStory(seeded[index].idea, index % 2 === 0, cfg);
           patchItem(index, { story: story.text, provider: story.provider, status: "voice" });
 
-          const take = await synthesizeSpeech(
-            story.text,
-            settings.voice,
-            settings.rate,
-            settings.pitch
-          );
+          const take = await createTake(story.text);
+          if (!take) return; /* STOP während der 50-s-Pause → keine Synthese */
           if (!take.audio.byteLength) throw new Error("voice engine returned no audio");
           voicesRef.current.set(index, take);
           patchItem(index, { status: "staged", voiceDuration: take.duration });
@@ -479,8 +509,9 @@ function Factory({ onLock }: { onLock?: () => void }) {
     }
 
     const staged = itemsRef.current.filter((i) => i.status === "staged").length;
-    setPhase(staged > 0 ? "staged" : "failed");
-    if (staged === 0)
+    const stopped = cancelRef.current.cancelled;
+    setPhase(staged > 0 ? "staged" : stopped ? "idle" : "failed");
+    if (staged === 0 && !stopped)
       setError("Nothing could be prepared — voice synthesis needs an internet connection.");
   }, [canPrepare, busy, ideas, settings, patchItem, ensureAudioCtx]);
 
@@ -901,7 +932,7 @@ function Factory({ onLock }: { onLock?: () => void }) {
           >
             {[
               { icon: Cpu, k: "SCRIPT LINES", v: keyed ? "QWEN / MISTRAL · DIRECT" : "OFFLINE WRITER" },
-              { icon: Mic, k: "VOICE BENCH", v: "EDGE READ-ALOUD · WEBSOCKET" },
+              { icon: Mic, k: "VOICE BENCH", v: "EDGE READ-ALOUD · 50 S TAKT" },
               { icon: Captions, k: "CAPTION JIG", v: "WORD-BOUNDARY TIMINGS" },
               { icon: MessageSquare, k: "STORY INTRO", v: `REDDIT CARD · ${settings.introOn ? `${settings.introDuration.toFixed(1)} s` : "AUS"}` },
               { icon: Clapperboard, k: "RENDER MILL", v: "CANVAS + MEDIARECORDER" },
@@ -1107,14 +1138,18 @@ function Factory({ onLock }: { onLock?: () => void }) {
               <span className="inline-block size-1.5 animate-led rounded-full bg-ember-500 text-ember-500" />
               <span className="truncate font-mono text-[10px] font-bold tracking-[0.18em] text-ember-400">
                 {phase === "preparing"
-                  ? `PREPARING ${stagedCount + errorCount}/10`
+                  ? `PREPARING ${stagedCount + errorCount}/10${
+                      voiceWait > 0
+                        ? ` · VOICE PAUSE ${Math.ceil(voiceWait / 1000)}s`
+                        : ""
+                    }`
                   : `RENDERING ${doneCount + errorCount}/10${
                       activeIndex !== null ? ` · UNIT ${String(activeIndex + 1).padStart(2, "0")}` : ""
                     }`}
               </span>
             </div>
             <div className="flex items-center gap-3">
-              {phase === "rendering" && (
+              {(phase === "rendering" || phase === "preparing") && (
                 <button
                   type="button"
                   onClick={cancel}
