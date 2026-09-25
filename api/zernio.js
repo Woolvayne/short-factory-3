@@ -16,9 +16,10 @@
  *
  * Sicherheit:
  *   - ZERNIO_API_KEY lebt NUR hier (process.env) und gelangt nie ins Bundle.
- *   - Ist VITE_APP_PASSWORD_HASH / VITE_APP_PASSWORD gesetzt, verlangt diese
- *     Route zusätzlich den Header `x-sf-auth` (dasselbe Passwort wie das
- *     Onepage-Gate) — sonst könnte jeder deine Zernio-Key-Route missbrauchen.
+ *   - Ist APP_PASSWORD / APP_PASSWORD_HASH (oder das alte VITE_Pendant) gesetzt,
+ *     verlangt diese Route zusätzlich den Header `x-sf-auth` — entweder das
+ *     signierte Sitzungs-Token aus `/api/auth` oder (Legacy) den Passwort-Hash.
+ *     Ohne gültiges Token gibt es 401, dein Zernio-Key ist also sicher.
  *   - Kein Kalender, keine Slots, keine Datenbank: Zeiten rechnet das Frontend,
  *     hier wird nur 1:1 an die Zernio-API durchgereicht.
  *
@@ -26,6 +27,7 @@
  */
 
 import crypto from "node:crypto";
+import { authenticateRequest, gateConfigured, gateMode } from "./_lib/gate.js";
 
 export const config = {
   runtime: "nodejs",
@@ -37,10 +39,11 @@ const API_KEY = (process.env.ZERNIO_API_KEY || "").trim();
 
 /* ------------------------------------------------------------------ */
 /*  Gate: dasselbe Passwort wie der Onepage-Schutz                     */
+/*                                                                     */
+/*  Geprüft wird in `api/_lib/gate.js` — dort liegen Passwort-Abgleich, */
+/*  Token-Signatur und das IP-Rate-Limit. Hier wird nur entschieden,    */
+/*  ob die Anfrage durch darf.                                          */
 /* ------------------------------------------------------------------ */
-
-const GATE_HASH = (process.env.VITE_APP_PASSWORD_HASH || "").trim().toLowerCase();
-const GATE_PLAIN = (process.env.VITE_APP_PASSWORD || "").trim();
 
 const safeEqual = (a, b) => {
   const ba = Buffer.from(String(a), "utf8");
@@ -48,14 +51,8 @@ const safeEqual = (a, b) => {
   return ba.length === bb.length && crypto.timingSafeEqual(ba, bb);
 };
 
-const sha256 = (text) => crypto.createHash("sha256").update(String(text), "utf8").digest("hex");
-
 function gateAllows(req) {
-  if (!GATE_HASH && !GATE_PLAIN) return true; // kein Gate konfiguriert → offen
-  const token = String(req.headers?.["x-sf-auth"] || "").trim();
-  if (!token) return false;
-  if (GATE_HASH) return safeEqual(token, GATE_HASH) || safeEqual(sha256(token), GATE_HASH);
-  return safeEqual(token, GATE_PLAIN);
+  return authenticateRequest(req).ok;
 }
 
 /** HMAC über eine Upload-URL, damit niemand fremde Ziele einschleusen kann (SSRF). */
@@ -188,7 +185,9 @@ export default async function handler(req, res) {
   if (!gateAllows(req)) {
     return json(401, {
       ok: false,
-      error: "Nicht freigeschaltet — bitte zuerst das Passwort im Onepage-Gate eingeben.",
+      code: "GATE",
+      error:
+        "Nicht freigeschaltet — bitte zuerst das Passwort im Onepage-Gate eingeben (Token abgelaufen? Seite neu laden).",
     });
   }
 
@@ -244,7 +243,8 @@ export default async function handler(req, res) {
         ok: true,
         configured: true,
         baseUrl: BASE_URL,
-        gate: Boolean(GATE_HASH || GATE_PLAIN),
+        gate: gateConfigured(),
+        gateMode: gateMode(),
         /* nur Accounts, die wirklich posten können — der Rest liegt in allAccounts */
         accounts: usable,
         allAccounts: accounts,

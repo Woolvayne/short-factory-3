@@ -1,147 +1,152 @@
 # ShortsFactory v3 — Anleitung
 
-Drei neue Bausteine, alle ohne zusätzliches Backend:
+Vier Bausteine rund um Zugang, Versand und Intro:
 
 | # | Feature | Wo eingestellt | Env-Variable (Vercel) |
 | --- | --- | --- | --- |
-| 1 | **Onepage-Passwortschutz** | volle Seite vor der App | `VITE_APP_PASSWORD_HASH` (oder `VITE_APP_PASSWORD`) |
+| 1 | **Onepage-Passwortschutz + Rate Limit** | volle Seite vor der App | `APP_PASSWORD` (oder `APP_PASSWORD_HASH`) — serverseitig |
 | 2 | **Zernio-Versandweg** | Panel `06 · Versand · Zernio` | `ZERNIO_API_KEY` |
 | 3 | **Reddit-Story-Intro** | `00 · Machine Settings → INTRO` | keine (liegt im localStorage) |
+| 4 | **Einrichtungs-Assistent** | Panel `-- · Einrichtung · nach dem Deploy` | zeigt offene Schritte an |
 
-> Kurzversion: Hash erzeugen → beide Variablen in Vercel eintragen → **neu deployen** → fertig.
-> Alles darunter steht hier im Detail.
+> **Neu hier?** Dann zuerst **[docs/EINRICHTUNG.md](EINRICHTUNG.md)** lesen — die Schritt-für-Schritt-
+> Anleitung für direkt nach dem Deploy (Passwort, IP-Sperre, KV, Zernio, Sendezeiten).
+> Dieses Dokument geht tiefer ins Detail.
 
 ---
 
-## 1 · Onepage-Passwortschutz (ohne Backend)
+## 1 · Onepage-Passwortschutz + IP-Sperre
 
 ### 1.1 So funktioniert es
 
-Beim Build ersetzt Vite `import.meta.env.VITE_APP_PASSWORD_HASH` fest im JavaScript-Bundle.
-Beim Öffnen der Seite rendert die App **ausschließlich** die Passwort-Seite
-(`src/components/PasswordGate.tsx`) — die Fabrik dahinter wird gar nicht erst gemountet.
-Das eingegebene Passwort wird im Browser mit **SHA-256** gehasht und gegen den Hash aus der
-Environment-Variable geprüft (`src/lib/gate.ts`). Es gibt keinen Login-Endpoint, keine
-Datenbank, keine Sessions auf einem Server.
+Eine einzige Seite liegt vor der Fabrik. Bis das richtige Passwort eingegeben ist, rendert die App
+**ausschließlich** die Passwort-Seite (`src/components/PasswordGate.tsx`) — die Fabrik dahinter wird
+gar nicht erst gemountet.
 
-Nach dem Entsperren merkt sich der Browser den Freischalt-Token:
+Geprüft wird **serverseitig** in der Vercel-Function `api/auth.js`:
 
-* Standard: **sessionStorage** → gilt nur für diesen Tab, nach dem Schließen ist wieder zu.
-* Häkchen **„Angemeldet bleiben"** → **localStorage** → bleibt bis zum manuellen Sperren.
-* Oben rechts im Header gibt es dafür den Button **SPERREN**.
+```
+Browser ──GET /api/auth?action=status──►  bin ich (IP) gesperrt? wie viele Versuche frei?
+        ──POST {action:"unlock"}───────►  Passwort prüfen (timing-safe)
+        ◄──{ ok, token }───────────────  signiertes Token (HMAC, Standard 12 h)
+        ──x-sf-auth: <token>───────────►  damit läuft /api/zernio
+```
 
-Ist **keine** der beiden Variablen gesetzt, ist das Gate deaktiviert und die App öffnet sich
-direkt (praktisch für `npm run dev`).
+* Das Passwort steht in der Vercel-Environment-Variable **`APP_PASSWORD`** (Klartext, serverseitig)
+  oder **`APP_PASSWORD_HASH`** (SHA-256). Beide Werte werden **nie** an den Browser geschickt.
+* **Jede Seite neu laden = Passwort neu eingeben.** Das Token liegt ausschließlich im
+  Arbeitsspeicher des Tabs — kein localStorage, kein sessionStorage, kein Cookie.
+* Oben rechts in der Fabrik sperrt der Button **SPERREN** die Sitzung sofort wieder.
 
-### 1.2 Schritt für Schritt — Vercel Dashboard
+**Fallback ohne Serverless-Function** (reiner `npm run dev`): Ist beim Build
+`VITE_APP_PASSWORD_HASH` / `VITE_APP_PASSWORD` gesetzt, prüft der Browser ersatzweise lokal gegen
+diesen Wert — dann gilt ein Zähler pro Gerät statt pro IP. Auf Vercel ist immer der Serverweg aktiv.
 
-**Schritt 1 — Passwort ausdenken** und Hash erzeugen:
+### 1.2 Rate Limit: 5 Fehlversuche → IP-Sperre
+
+| Stufe | Auslöser | Sperre |
+| --- | --- | --- |
+| 1 | `APP_MAX_ATTEMPTS` Fehlversuche in Folge (**Standard 5**) | 5 Minuten |
+| 2 | danach wieder 5 | 15 Minuten |
+| 3 | danach wieder 5 | 1 Stunde |
+| 4 | danach wieder 5 | 6 Stunden |
+| 5+ | danach wieder 5 | 24 Stunden (bleibt auf der letzten Stufe) |
+
+* Gezählt wird **pro IP**; gespeichert wird nur ein gesalzener SHA-256-Hash der IP, nie die IP selbst.
+* Während der Sperre antwortet `/api/auth` mit `429` + `Retry-After`; die Passwort-Seite zeigt den
+  Countdown live („IP GESPERRT · FREI IN 4 MIN 12 S").
+* Ein erfolgreicher Login setzt den Zähler dieser IP zurück.
+* Anpassbar per Env: `APP_MAX_ATTEMPTS`, `APP_LOCKOUT_MINUTES` (z. B. `10,60,1440`),
+  `APP_SESSION_TTL` (Sekunden, Standard `43200`).
+* **Speicher:** Standard ist In-Memory (pro warmer Instanz). Mit Vercel KV / Upstash
+  (`KV_REST_API_URL` + `KV_REST_API_TOKEN`) gilt die Sperre global über alle Instanzen — empfohlen.
+  Details: [EINRICHTUNG.md → Kapitel 2.2](EINRICHTUNG.md#22-sperre-global-machen-vercel-kv--upstash-empfohlen)
+
+### 1.3 Schritt für Schritt — Vercel Dashboard
+
+**Schritt 1 — Passwort ausdenken** (lang, zufällig, nirgendwo sonst benutzt).
+
+**Schritt 2 — Variable eintragen:** Projekt → **Settings** → **Environment Variables** → **Add New**
+
+| Feld | Wert |
+| --- | --- |
+| Name | `APP_PASSWORD` |
+| Value | dein Passwort (Klartext — nur serverseitig) |
+| Environments | Production ✔ Preview ✔ |
+
+**Ohne `VITE_`-Prefix!** `VITE_*`-Variablen landen im Browser-Bundle. Alternative mit Hash:
 
 ```bash
 npm install
-npm run password:hash -- "meinSicheresPasswort"
+npm run password:hash -- "meinSicheresPasswort"   # → SHA-256 ausgeben
+# Diesen Hash als APP_PASSWORD_HASH eintragen (statt APP_PASSWORD)
 ```
 
-Interaktiv (Eingabe bleibt unsichtbar) geht es auch:
+**Schritt 3 — Neu deployen (wichtig!)** Deployments → letztes Deployment → **⋯** → **Redeploy**
+(ohne „Use existing Build Cache"), oder einen Commit pushen, oder `vercel --prod`.
 
-```bash
-npm run password:hash
-```
+**Schritt 4 — Testen:** Seite öffnen → „PRÜFE SPERRE…" → Passwort eingeben → **FABRIK ENTSPERREN**.
+Falsches Passwort → „NOCH 4 VON 5 VERSUCHEN — DANN 5 MIN SPERRE". Nach 5 Fehlversuchen zeigt die
+Seite einen Live-Countdown der IP-Sperre. **F5 drücken → Passwort wird erneut verlangt.** ✔
 
-Die Ausgabe sieht so aus:
-
-```
-┌─ SHORTSFACTORY · PASSWORT-SCHUTZ ────────────────────────────────
-│ Passwort-Länge : 20 Zeichen
-│ SHA-256        : 0ead2060b65992dca4769af601a1b3a35ef38cfad2c2c465bb160ea764157c5d
-└──────────────────────────────────────────────────────────────────
-```
-
-**Schritt 2 — Variable in Vercel eintragen**
-
-1. [vercel.com](https://vercel.com) → dein Projekt öffnen
-2. **Settings** → **Environment Variables**
-3. **Add New**
-   * **Name:** `VITE_APP_PASSWORD_HASH`
-   * **Value:** der SHA-256-Hash aus Schritt 1 (nur der Hash, ohne Passwort!)
-   * **Environment:** `Production` ✔ `Preview` ✔ `Development` ✔ (nach Bedarf)
-   * **Sensitive:** auslassen — die Variable muss beim Build lesbar sein
-4. **Save**
-
-**Schritt 3 — Neu deployen (wichtig!)**
-
-Environment-Variablen mit `VITE_`-Prefix werden **beim Build** eingebrannt. Ein vorhandenes
-Deployment kennt die neue Variable also noch nicht:
-
-* Deployments → letztes Deployment → **⋯** → **Redeploy** (ohne „Use existing Build Cache"), oder
-* einfach einen neuen Commit pushen, oder
-* `vercel --prod`
-
-**Schritt 4 — Testen**
-
-Seite öffnen → Passwort-Seite erscheint → Passwort eingeben → **Fabrik entsperren**.
-Falsches Passwort → Fehlermeldung, nach 5 Versuchen 15 Sekunden Pause.
-
-### 1.3 Alternativ: Vercel CLI
+### 1.4 Vercel CLI
 
 ```bash
 npm i -g vercel
 vercel link
-printf '%s' "0ead2060b65992dca4769af601a1b3a35ef38cfad2c2c465bb160ea764157c5d" \
-  | vercel env add VITE_APP_PASSWORD_HASH production
-printf '%s' "0ead2060b65992dca4769af601a1b3a35ef38cfad2c2c465bb160ea764157c5d" \
-  | vercel env add VITE_APP_PASSWORD_HASH preview
+printf '%s' 'meinSicheresPasswort' | vercel env add APP_PASSWORD production
+printf '%s' 'meinSicheresPasswort' | vercel env add APP_PASSWORD preview
 vercel --prod
 ```
 
-### 1.4 Lokal testen
+### 1.5 Lokal testen
 
 ```bash
-echo 'VITE_APP_PASSWORD_HASH=0ead2060b65992dca4769af601a1b3a35ef38cfad2c2c465bb160ea764157c5d' >> .env.local
-npm run dev
+cat >> .env.local <<'EOF'
+APP_PASSWORD=meinSicheresPasswort
+EOF
+npx vercel dev        # führt /api/auth + /api/zernio wirklich aus (empfohlen)
+npm run dev           # nur Frontend → Fallback über VITE_APP_PASSWORD_HASH
 ```
 
-`.env.local` steht in `.gitignore` und wandert nie ins Repo. Ohne diese Datei ist das Gate lokal
-ausgeschaltet — du kommst also immer in die App.
+### 1.6 Passwort ändern oder entfernen
 
-### 1.5 Passwort ändern oder entfernen
+* **Ändern:** neuen Wert in Vercel setzen (oder neuen Hash) → **Redeploy**. Alle laufenden Tokens
+  werden automatisch ungültig, weil sie mit dem neuen Passwort signiert werden müssten.
+* **Entfernen:** `APP_PASSWORD` (und ggf. `VITE_APP_PASSWORD*`) löschen + Redeploy → die App ist
+  wieder offen. Der Einrichtungs-Assistent im Panel `--` meckert dann mit „PASSWORT-SCHUTZ: offen".
 
-* **Ändern:** neuen Hash erzeugen (`npm run password:hash -- "neu"`), Value in Vercel ersetzen,
-  **Redeploy**. Alte gespeicherte Tokens werden automatisch ungültig, weil der gespeicherte Wert
-  nicht mehr zum neuen Hash passt.
-* **Entfernen:** Variable in Vercel löschen + Redeploy → die App ist wieder offen.
+### 1.7 Ehrliche Sicherheitseinschätzung
 
-### 1.6 Ehrliche Sicherheitseinschätzung
+* Der Passwort-Abgleich läuft serverseitig und timing-safe; der Wert verlässt Vercel nie.
+* Das Token ist HMAC-signiert und läuft ab (Standard 12 h) — es liegt nur im Tab-Speicher.
+* Die IP-Sperre bremst Durchprobieren wirksam aus (5 Versuche → eskalierende Sperren bis 24 h).
+* **Aber:** Die Oberfläche selbst liegt als statische Datei auf Vercel. Wer sie herunterlädt, kann
+  Teile der UI sehen — aber **nichts auslösen**: `/api/zernio` verlangt ein gültiges Token, und
+  `ZERNIO_API_KEY` existiert nur in der Function. Für noch härteren Schutz zusätzlich
+  **Vercel → Settings → Deployment Protection** einschalten.
+* Ohne KV gilt die Sperre nur pro Instanz — wer es genau braucht, verbindet Vercel KV.
 
-Ein reines Frontend-Gate ist ein **Sichtschutz**, keine Server-Autorisierung:
-
-* Der Hash liegt im ausgelieferten Bundle. Wer ihn hat, kann das Passwort offline raten
-  (schwaches Passwort = schnell geknackt). Deshalb: **langes, zufälliges Passwort** wählen.
-* Ein entschlossener Besucher kann die Gate-Prüfung im Browser umgehen und die Oberfläche laden.
-* **Aber:** Der Zernio-Versand ist dadurch trotzdem geschützt. `api/zernio.js` verlangt den
-  Header `x-sf-auth` und prüft ihn **serverseitig** gegen dieselbe Variable. Ohne gültiges
-  Passwort liefert die Route `401` — dein `ZERNIO_API_KEY` kann also nicht von Fremden benutzt
-  werden, und der Key selbst ist im Browser ohnehin nie sichtbar.
-* Brauchst du echten Zugriffsschutz fürs ganze Projekt: **Vercel → Settings → Deployment
-  Protection** (Password Protection / Vercel Authentication). Das ergänzt dieses Gate, ersetzt
-  es aber nicht (Deployment Protection greift nicht auf Hobby-Plan-Domains für alle Besucher).
-
-### 1.7 Troubleshooting
+### 1.8 Troubleshooting
 
 | Symptom | Ursache / Lösung |
 | --- | --- |
-| Gate erscheint nicht | Variable fehlt, heißt nicht exakt `VITE_APP_PASSWORD_HASH`, oder es wurde **nicht neu deployt** |
-| „PRÜFUNG FEHLGESCHLAGEN / crypto.subtle fehlt" | Seite läuft über plain HTTP. `crypto.subtle` braucht HTTPS oder `localhost` |
-| Passwort funktioniert nicht mehr | Passwort/Hash in Vercel geändert → alter Token ist ungültig, neu eingeben |
-| Hash passt nie | Leerzeichen mitkopiert. `npm run password:hash` gibt den Hash ohne Leerzeichen aus; der Vergleich trimmt Eingaben zusätzlich |
+| Gate erscheint nicht | `APP_PASSWORD` fehlt/vertippt, falsches Environment, oder **nicht neu deployt** |
+| „PRÜFE SPERRE…" und dann offen | `/api/auth` antwortet `configured:false` → Variable prüfen (Kapitel 1.3) |
+| „IP GESPERRT" ohne eigenes Zutun | 5 Fehlversuche von dieser IP (z. B. Tippfehler-Serie) → Countdown abwarten; mit KV notfalls den Key `sf:gate:…` im KV-Datenbrowser löschen |
+| „crypto.subtle fehlt" | Nur im Offline-Fallback ohne Server über plain HTTP — über HTTPS, localhost oder `vercel dev` tritt es nicht auf |
+| Zernio meldet 401 „Nicht freigeschaltet" | Token abgelaufen (`APP_SESSION_TTL`) oder Seite neu geladen → neu entsperren |
+| „HINWEIS: OHNE VERCEL KV …" | Erwartet ohne KV: Sperre gilt pro Server-Instanz. Mit `KV_REST_API_URL`/`KV_REST_API_TOKEN` global |
 
 ---
+
 
 ## 2 · Zernio als Versandweg
 
 Zernio ist die Social-Media-API (`https://zernio.com/api/v1`, Doku:
 [docs.zernio.com](https://docs.zernio.com)), die hinter dem Versand steckt: ein Upload, ein Post,
-16 Plattformen. **Es gibt keinen Kalender in dieser App** — nur drei Versand-Arten.
+16 Plattformen. **Es gibt keinen Kalender in dieser App** — nur vier Versand-Arten und einen
+Sendeplan als Liste.
 
 ### 2.1 Voraussetzungen
 
@@ -181,13 +186,18 @@ führt keine Serverless-Functions aus).
   (`PUBLIC_TO_EVERYONE`, Kommentare/Duet/Stitch erlaubt, Content-Preview bestätigt) automatisch mit.
 * YouTube-Titel werden auf 100 Zeichen gekürzt (API-Limit).
 
-### 2.4 Die drei Versand-Arten (Panel `06 · Versand · Zernio`)
+### 2.4 Die vier Versand-Arten (Panel `06 · Versand · Zernio`)
 
 | Modus | Verhalten |
 | --- | --- |
 | **SOFORT** | `publishNow: true` — jedes Video geht direkt nach dem Upload raus |
-| **06 & 20 UHR** | ein Video um 06:00, das nächste um 20:00 (Europe/Berlin), dann der nächste Tag … Beide Uhrzeiten sind editierbar. Der Sendeplan darunter zeigt alle 10 Zeiten als Liste — kein Kalender |
+| **06 & 20 UHR** *(Standard)* | ein Video um 06:00, das nächste um 20:00 (Europe/Berlin), dann der nächste Tag … Beide Uhrzeiten sind **editierbar**, weitere über **`+ SENDZEIT`** ergänzbar (bis 10), einzelne mit **`ENTFERNEN`** löschbar. Ein-Klick-Vorlagen: `06 & 20` · `09 & 18` · `12 & 19` · `3× TÄGLICH` |
+| **EIGENE ZEIT** | eine eigene Uhrzeit **pro Video**: Vorlage (Standard 06:00/20:00) mit **`ZEITEN ÜBERNEHMEN`** auf alle 10 verteilen und/oder jede Zeile einzeln als `datetime-local` setzen. Leeres Feld = dieses Video geht sofort raus. Vergangene Zeiten werden automatisch auf „jetzt + 2 min" vorgezogen und im Sendeplan gelb als `(VORGEZOGEN)` markiert |
 | **FLEXIBEL** | Startzeit (`datetime-local`) + Abstand (15 Min bis 1 Tag). Liegt die Startzeit in der Vergangenheit, wird automatisch auf den nächsten freien Zeitpunkt vorgespult |
+
+Der Sendeplan darunter zeigt alle 10 Zeiten als Liste — kein Kalender. Intern ist das eine reine
+Rechnung in `computeSlots()` (`src/lib/zernio.ts`); im Modus `EIGENE ZEIT` wird die Zeit über den
+**Unit-Index** gewählt (Video 01 bekommt Zeile 01 usw.), in den anderen Modi in Sende-Reihenfolge.
 
 Zusätzlich: **„Als Entwurf speichern"** → `isDraft: true`. Landet als Draft in Zernio, wird nicht
 veröffentlicht. Perfekt, um den kompletten Weg einmal ohne Risiko durchzutesten.
@@ -311,12 +321,20 @@ Funktion wie im Render — die Vorschau ist kein Mockup.
 
 | Variable | Prefix | Wo | Pflicht | Zweck |
 | --- | --- | --- | --- | --- |
-| `VITE_APP_PASSWORD_HASH` | `VITE_` → Browser | Build | nein¹ | SHA-256 des Gate-Passworts |
-| `VITE_APP_PASSWORD` | `VITE_` → Browser | Build | nein¹ | Klartext-Fallback (nicht empfohlen) |
-| `ZERNIO_API_KEY` | serverseitig | Runtime | für Versand | Zernio-API-Key `sk_…` |
-| `ZERNIO_BASE_URL` | serverseitig | Runtime | nein | eigene API-Basis, Standard `https://zernio.com/api/v1` |
+| `APP_PASSWORD` | keins → Server | `/api/auth` | **empfohlen**¹ | Gate-Passwort (Klartext, verlässt den Server nie) |
+| `APP_PASSWORD_HASH` | keins → Server | `/api/auth` | Alternative¹ | SHA-256 des Gate-Passworts |
+| `APP_MAX_ATTEMPTS` | keins → Server | `/api/auth` | nein | Fehlversuche bis zur IP-Sperre (Standard `5`) |
+| `APP_LOCKOUT_MINUTES` | keins → Server | `/api/auth` | nein | Sperr-Stufen in Minuten (Standard `5,15,60,360,1440`) |
+| `APP_SESSION_TTL` | keins → Server | `/api/auth` | nein | Token-Gültigkeit in Sekunden (Standard `43200` = 12 h) |
+| `KV_REST_API_URL` + `KV_REST_API_TOKEN` | keins → Server | `/api/auth` | nein | Vercel KV: IP-Sperre gilt global |
+| `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` | keins → Server | `/api/auth` | nein | Upstash direkt (Alternative zu Vercel KV) |
+| `ZERNIO_API_KEY` | serverseitig | `/api/zernio` | für Versand | Zernio-API-Key `sk_…` |
+| `ZERNIO_BASE_URL` | serverseitig | `/api/zernio` | nein | eigene API-Basis, Standard `https://zernio.com/api/v1` |
+| `VITE_APP_PASSWORD_HASH` | `VITE_` → Browser | Build + Server | nein² | Altbestand / Offline-Fallback |
+| `VITE_APP_PASSWORD` | `VITE_` → Browser | Build + Server | nein² | dito als Klartext (nicht empfohlen) |
 
 ¹ Ohne beide Passwort-Variablen ist das Gate aus — die App ist dann öffentlich erreichbar.
+² Nur für ältere Deployments bzw. den lokalen Fallback ohne Serverless-Functions nötig.
 
 Qwen-/Mistral-Keys gehören **nicht** nach Vercel, sondern in die App (`00 → AI`) und liegen nur im
 localStorage deines Browsers.
@@ -327,17 +345,23 @@ localStorage deines Browsers.
 
 ```bash
 npm install
-npm run password:hash -- "meinPasswort"      # Hash für das Gate
+npm run password:hash -- "meinPasswort"      # optional: Hash statt Klartext
 npm run typecheck                            # optional: TypeScript prüfen
 npm run build                                # baut dist/ (Single-File)
 ```
 
 Vercel:
 
-- [ ] `VITE_APP_PASSWORD_HASH` gesetzt (Production + Preview)
+- [ ] `APP_PASSWORD` gesetzt (Production + Preview, **ohne** `VITE_`)
+- [ ] optional `APP_MAX_ATTEMPTS` / `APP_LOCKOUT_MINUTES` angepasst
+- [ ] optional Vercel KV verbunden → IP-Sperre gilt global
 - [ ] `ZERNIO_API_KEY` gesetzt (**ohne** `VITE_`)
 - [ ] neu deployt (Redeploy ohne Build-Cache)
 - [ ] Seite öffnen → Passwort-Seite erscheint → Entsperrung funktioniert
+- [ ] **F5 → Passwort wird erneut verlangt** ✔
+- [ ] 5× falsch → „IP GESPERRT" mit Live-Countdown ✔
+- [ ] Panel `-- · Einrichtung` zeigt alle Häkchen
 - [ ] Panel `06` zeigt grüne LED „ZERNIO_API_KEY VERBUNDEN" + deine Accounts
+- [ ] Sendezeiten wählen (Standard 06:00 / 20:00, eigene Zeit pro Video oder flexibel)
 - [ ] ein Video rendern → **→ ZERNIO** → Status wird `GESENDET/GEPLANT`
 - [ ] optional: „Als Entwurf speichern" für den ersten Testlauf

@@ -17,11 +17,15 @@ import { cn } from "../utils/cn";
 import type { LocalRenderItem, ShipLogEntry, ShipState } from "../lib/types";
 import {
   FLEX_INTERVALS,
+  MAX_SLOT_TIMES,
   SHIP_GAP_MS,
+  SHIP_TIME_PRESETS,
   SHIP_TIMEZONE,
   computeSlots,
   defaultFlexStart,
+  fillCustomTimes,
   platformLabel,
+  slotTimesLabel,
   type ShipConfig,
   type ShipMode,
   type ZernioStatus,
@@ -122,7 +126,17 @@ export default function ShipPanel({
     <Section
       index="06"
       title="Versand · Zernio"
-      hint={run.active ? `${SHIP_GAP_MS / 1000} s TAKT` : `${done.length}/10 VERSANDFERTIG`}
+      hint={
+        run.active
+          ? `${SHIP_GAP_MS / 1000} s TAKT`
+          : cfg.mode === "now"
+            ? "SOFORT"
+            : cfg.mode === "slots"
+              ? slotTimesLabel(cfg.slotTimes)
+              : cfg.mode === "custom"
+                ? "EIGENE ZEITEN"
+                : `ABSTAND ${cfg.flexIntervalMinutes} MIN`
+      }
       active={run.active}
       complete={done.length > 0 && notSent.length === 0}
       aside={
@@ -195,40 +209,175 @@ export default function ShipPanel({
         <div className="grid content-start gap-3">
           <Field label="WANN RAUS?" hint={`ZEITZONE ${SHIP_TIMEZONE}`}>
             <Segmented<ShipMode>
-              columns={3}
+              columns={2}
               value={cfg.mode}
               onChange={(v) => set("mode", v)}
               options={[
                 { id: "now", label: "SOFORT", sub: "publishNow" },
-                { id: "slots", label: "06 & 20 UHR", sub: "täglich 2 Slots" },
+                { id: "slots", label: "06 & 20 UHR", sub: "Standard · täglich" },
+                { id: "custom", label: "EIGENE ZEIT", sub: "pro Video" },
                 { id: "flex", label: "FLEXIBEL", sub: "Start + Abstand" },
               ]}
             />
           </Field>
 
           {cfg.mode === "slots" && (
-            <div className="grid grid-cols-2 gap-2">
-              {cfg.slotTimes.map((time, i) => (
-                <label key={i} className="block">
-                  <span className="mono-label mb-1.5 block text-[9px] text-coal-400">
-                    SLOT {i + 1}
-                  </span>
-                  <input
-                    type="time"
-                    value={time}
-                    onChange={(e) =>
-                      set(
-                        "slotTimes",
-                        cfg.slotTimes.map((t, idx) => (idx === i ? e.target.value : t))
-                      )
-                    }
-                    className="sf-input w-full border border-coal-700/80 bg-coal-850 px-3 py-2.5 font-mono text-[12px] text-paper-100"
-                  />
-                </label>
-              ))}
-              <p className="col-span-2 font-mono text-[9px] leading-relaxed tracking-wider text-coal-500">
-                EIN VIDEO UM {cfg.slotTimes[0] ?? "06:00"}, DAS NÄCHSTE UM{" "}
-                {cfg.slotTimes[1] ?? "20:00"} — SO WEITER, BIS ALLE 10 DRAUS SIND.
+            <div className="grid gap-2">
+              <div className="grid gap-2 sm:grid-cols-2">
+                {cfg.slotTimes.map((time, i) => (
+                  <label key={i} className="block">
+                    <span className="mono-label mb-1.5 flex items-center justify-between gap-2 text-[9px] text-coal-400">
+                      SLOT {i + 1}
+                      {cfg.slotTimes.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            set(
+                              "slotTimes",
+                              cfg.slotTimes.filter((_, idx) => idx !== i)
+                            )
+                          }
+                          className="border border-coal-700 px-1.5 font-mono text-[9px] font-bold text-coal-400 hover:border-rose-err hover:text-rose-err"
+                          title="Sendezeit entfernen"
+                        >
+                          ENTFERNEN
+                        </button>
+                      )}
+                    </span>
+                    <input
+                      type="time"
+                      value={time}
+                      onChange={(e) =>
+                        set(
+                          "slotTimes",
+                          cfg.slotTimes.map((t, idx) => (idx === i ? e.target.value : t))
+                        )
+                      }
+                      className="sf-input w-full border border-coal-700/80 bg-coal-850 px-3 py-2.5 font-mono text-[12px] text-paper-100"
+                    />
+                  </label>
+                ))}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={cfg.slotTimes.length >= MAX_SLOT_TIMES}
+                  onClick={() =>
+                    set("slotTimes", [...cfg.slotTimes, cfg.slotTimes.at(-1) ?? "06:00"])
+                  }
+                  className="min-h-[30px] border border-coal-600 px-2.5 py-1 font-mono text-[9px] font-bold tracking-widest text-coal-200 hover:border-volt-400 hover:text-volt-300 disabled:opacity-40"
+                >
+                  + SENDZEIT
+                </button>
+                {SHIP_TIME_PRESETS.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => set("slotTimes", [...preset.times])}
+                    className={cn(
+                      "min-h-[30px] border px-2.5 py-1 font-mono text-[9px] font-bold tracking-widest",
+                      cfg.slotTimes.join(",") === preset.times.join(",")
+                        ? "border-volt-400/60 bg-volt-400/10 text-volt-300"
+                        : "border-coal-600 text-coal-300 hover:border-volt-400 hover:text-volt-300"
+                    )}
+                    title={preset.times.join(" · ")}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              <p className="font-mono text-[9px] leading-relaxed tracking-wider text-coal-500">
+                STANDARD: EIN VIDEO UM {cfg.slotTimes[0] ?? "06:00"}, DAS NÄCHSTE UM{" "}
+                {cfg.slotTimes[1] ?? "20:00"} — DANN DER NÄCHSTE TAG, BIS ALLE 10 DRAUSSEN SIND.
+                JEDE ZEIT IST EDITIERBAR, WEITERE SENDZEITEN ÜBER „+ SENDZEIT“. FÜR JEDES VIDEO EINE
+                EIGENE ZEIT: MODUS „EIGENE ZEIT“.
+              </p>
+            </div>
+          )}
+
+          {cfg.mode === "custom" && (
+            <div className="grid gap-2.5">
+              <div className="border border-coal-700/80 bg-coal-850/60 p-2.5">
+                <p className="mono-label mb-2 flex items-center gap-1.5 text-[9px] text-coal-400">
+                  <Clock className="size-3" /> VORLAGE (WIRD AUF DIE 10 VIDEOS VERTEILT)
+                </p>
+                <div className="flex flex-wrap items-end gap-2">
+                  {cfg.slotTimes.map((time, i) => (
+                    <label key={i} className="block">
+                      <span className="mono-label mb-1 block text-[8.5px] text-coal-500">
+                        ZEIT {i + 1}
+                      </span>
+                      <input
+                        type="time"
+                        value={time}
+                        onChange={(e) =>
+                          set(
+                            "slotTimes",
+                            cfg.slotTimes.map((t, idx) => (idx === i ? e.target.value : t))
+                          )
+                        }
+                        className="sf-input w-[124px] border border-coal-700/80 bg-coal-850 px-2.5 py-2 font-mono text-[12px] text-paper-100"
+                      />
+                    </label>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => set("customTimes", fillCustomTimes(cfg.slotTimes, 10))}
+                    className="min-h-[38px] border border-volt-400/60 bg-volt-400/10 px-3 py-2 font-mono text-[9.5px] font-bold tracking-widest text-volt-300 hover:bg-volt-400/20"
+                  >
+                    ZEITEN ÜBERNEHMEN
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => set("customTimes", Array.from({ length: 10 }, () => ""))}
+                    className="min-h-[38px] border border-coal-600 px-3 py-2 font-mono text-[9.5px] font-bold tracking-widest text-coal-300 hover:border-rose-err hover:text-rose-err"
+                  >
+                    ALLE LEEREN (SOFORT)
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid gap-1.5">
+                {Array.from({ length: 10 }, (_, i) => {
+                  const value = cfg.customTimes[i] ?? "";
+                  return (
+                    <label key={i} className="flex items-center gap-2">
+                      <span className="w-6 shrink-0 font-mono text-[9.5px] text-coal-400 tabular-nums">
+                        {String(i + 1).padStart(2, "0")}
+                      </span>
+                      <input
+                        type="datetime-local"
+                        value={value}
+                        onChange={(e) => {
+                          const next = Array.from({ length: 10 }, (_, idx) =>
+                            idx === i ? e.target.value : (cfg.customTimes[idx] ?? "")
+                          );
+                          set("customTimes", next);
+                        }}
+                        className="sf-input min-w-0 flex-1 border border-coal-700/80 bg-coal-850 px-2.5 py-2 font-mono text-[11px] text-paper-100"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = Array.from({ length: 10 }, (_, idx) =>
+                            idx === i ? "" : (cfg.customTimes[idx] ?? "")
+                          );
+                          set("customTimes", next);
+                        }}
+                        className="shrink-0 border border-coal-700 px-2 py-1.5 font-mono text-[9px] font-bold text-coal-400 hover:border-volt-400 hover:text-volt-300"
+                        title="Leer = sofort veröffentlichen"
+                      >
+                        {value ? "LEEREN" : "SOFORT"}
+                      </button>
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="font-mono text-[9px] leading-relaxed tracking-wider text-coal-500">
+                LEERES FELD = DIESES VIDEO GEHT SOFORT RAUS. ZEITEN IN DER VERGANGENHEIT WERDEN
+                AUTOMATISCH AUF JETZT VORGEZOGEN (MARKIERT IM SENDEPLAN). ALLES IN {SHIP_TIMEZONE}.
               </p>
             </div>
           )}
@@ -274,8 +423,17 @@ export default function ShipPanel({
           {/* Slot-Vorschau — Liste, kein Kalender */}
           {cfg.mode !== "now" && (
             <div className="border border-coal-700/80 bg-coal-950/40 p-2.5">
-              <p className="mono-label mb-2 flex items-center gap-1.5 text-[9px] text-coal-400">
-                <Clock className="size-3" /> SENDEPLAN (10 VIDEOS)
+              <p className="mono-label mb-2 flex items-center justify-between gap-2 text-[9px] text-coal-400">
+                <span className="flex items-center gap-1.5">
+                  <Clock className="size-3" /> SENDEPLAN (10 VIDEOS)
+                </span>
+                <span className="text-coal-500">
+                  {cfg.mode === "custom"
+                    ? "EIGENE ZEIT PRO VIDEO"
+                    : cfg.mode === "flex"
+                      ? `ABSTAND ${cfg.flexIntervalMinutes} MIN`
+                      : slotTimesLabel(cfg.slotTimes)}
+                </span>
               </p>
               <ol className="grid gap-1">
                 {slots.map((slot, i) => {
@@ -289,8 +447,19 @@ export default function ShipPanel({
                       <span className="font-mono text-[9.5px] text-coal-400 tabular-nums">
                         {String(i + 1).padStart(2, "0")}
                       </span>
-                      <span className="font-mono text-[9.5px] tracking-wider text-coal-200">
+                      <span
+                        className={cn(
+                          "font-mono text-[9.5px] tracking-wider",
+                          slot.bumped ? "text-amber-warn" : "text-coal-200"
+                        )}
+                        title={
+                          slot.bumped
+                            ? "Die eingestellte Zeit lag in der Vergangenheit — wird auf „jetzt“ vorgezogen."
+                            : undefined
+                        }
+                      >
                         {slot.label}
+                        {slot.bumped ? " (VORGEZOGEN)" : ""}
                       </span>
                       {state?.status === "sent" && (
                         <BadgeCheck className="size-3 shrink-0 text-volt-400" />

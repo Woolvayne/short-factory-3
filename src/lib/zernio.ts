@@ -15,7 +15,7 @@
  * API-Doku: https://docs.zernio.com · https://zernio.com/llms.txt
  */
 
-import { gateHeaders } from "./gate";
+import { gateHeaders, notifyGateExpired } from "./gate";
 import { sleep } from "./media";
 import type { LocalRenderItem } from "./types";
 
@@ -47,12 +47,21 @@ export interface ZernioStatus {
   error?: string;
 }
 
-export type ShipMode = "now" | "slots" | "flex";
+export type ShipMode = "now" | "slots" | "flex" | "custom";
 
 export interface ShipConfig {
   mode: ShipMode;
-  /** Uhrzeiten (Europe/Berlin) für den Slot-Modus, z. B. ["06:00","20:00"] */
+  /**
+   * Uhrzeiten (Europe/Berlin, "HH:mm") für den Slot-Modus — Standard
+   * `["06:00","20:00"]`. Beliebig erweiterbar: ein Video um 6 Uhr, das nächste
+   * um 20 Uhr, dann der nächste Tag … bis alle 10 durch sind.
+   */
   slotTimes: string[];
+  /**
+   * Eigene Zeiten pro Video (Modus `custom`): 10 × `datetime-local`
+   * ("YYYY-MM-DDTHH:mm"), leerer Eintrag = sofort.
+   */
+  customTimes: string[];
   /** Startzeit (datetime-local Wert) für den Flex-Modus */
   flexStart: string;
   /** Abstand zwischen zwei Videos im Flex-Modus, in Minuten */
@@ -64,7 +73,7 @@ export interface ShipConfig {
   titleOverride: string;
 }
 
-const SHIP_CFG_KEY = "shortsfactory.zernio.ship.v1";
+const SHIP_CFG_KEY = "shortsfactory.zernio.ship.v2";
 
 export const DEFAULT_CAPTION_TEMPLATE = `{title}
 
@@ -72,9 +81,13 @@ export const DEFAULT_CAPTION_TEMPLATE = `{title}
 
 {hashtags}`;
 
+/** Standard-Sendezeiten: ein Video um 6 Uhr, das nächste um 20 Uhr. */
+export const DEFAULT_SLOT_TIMES = ["06:00", "20:00"];
+
 export const DEFAULT_SHIP_CONFIG: ShipConfig = {
   mode: "now",
-  slotTimes: ["06:00", "20:00"],
+  slotTimes: [...DEFAULT_SLOT_TIMES],
+  customTimes: [],
   flexStart: "",
   flexIntervalMinutes: 720,
   captionTemplate: DEFAULT_CAPTION_TEMPLATE,
@@ -93,13 +106,34 @@ export const FLEX_INTERVALS: { id: number; label: string }[] = [
   { id: 1440, label: "1 TAG" },
 ];
 
+/** Ein-Klick-Vorlagen für die Sendezeiten (Panel 06 → „06 & 20 UHR“). */
+export const SHIP_TIME_PRESETS: { id: string; label: string; sub: string; times: string[] }[] = [
+  { id: "classic", label: "06 & 20", sub: "Standard", times: ["06:00", "20:00"] },
+  { id: "primet", label: "09 & 18", sub: "Bürozeiten", times: ["09:00", "18:00"] },
+  { id: "noon", label: "12 & 19", sub: "Mittag + Abend", times: ["12:00", "19:00"] },
+  { id: "triple", label: "3× TÄGLICH", sub: "08/14/20", times: ["08:00", "14:00", "20:00"] },
+];
+
+/** Höchstzahl eigener Sendezeiten (10 Videos) */
+export const MAX_SLOT_TIMES = 10;
+
 export function loadShipConfig(): ShipConfig {
   try {
-    const raw = localStorage.getItem(SHIP_CFG_KEY);
-    if (!raw) return { ...DEFAULT_SHIP_CONFIG };
-    return { ...DEFAULT_SHIP_CONFIG, ...(JSON.parse(raw) as Partial<ShipConfig>) };
+    const raw =
+      localStorage.getItem(SHIP_CFG_KEY) ?? localStorage.getItem("shortsfactory.zernio.ship.v1");
+    if (!raw) return { ...DEFAULT_SHIP_CONFIG, slotTimes: [...DEFAULT_SLOT_TIMES] };
+    const parsed = JSON.parse(raw) as Partial<ShipConfig>;
+    return {
+      ...DEFAULT_SHIP_CONFIG,
+      ...parsed,
+      slotTimes:
+        Array.isArray(parsed.slotTimes) && parsed.slotTimes.length
+          ? parsed.slotTimes
+          : [...DEFAULT_SLOT_TIMES],
+      customTimes: Array.isArray(parsed.customTimes) ? parsed.customTimes : [],
+    };
   } catch {
-    return { ...DEFAULT_SHIP_CONFIG };
+    return { ...DEFAULT_SHIP_CONFIG, slotTimes: [...DEFAULT_SLOT_TIMES] };
   }
 }
 
@@ -171,6 +205,8 @@ export interface Slot {
   wall: string | null;
   /** menschenlesbar: "HEUTE 20:00" · "MORGEN 06:00" · "FR 26.09. 06:00" · "SOFORT" */
   label: string;
+  /** true = die eingestellte Zeit lag in der Vergangenheit und wurde auf „jetzt“ vorgezogen */
+  bumped?: boolean;
 }
 
 const WEEKDAYS = ["SO", "MO", "DI", "MI", "DO", "FR", "SA"];
@@ -214,9 +250,11 @@ export function defaultFlexStart(): string {
 
 /**
  * Rechnet die Sendezeiten für `count` Videos aus.
- * - `now`   → zehnmal SOFORT
- * - `slots` → abwechselnd 06:00 / 20:00 (Europe/Berlin), immer der nächste freie Zeitpunkt
- * - `flex`  → Startzeit + fester Abstand
+ * - `now`    → zehnmal SOFORT
+ * - `slots`  → abwechselnd die eingestellten Uhrzeiten (Standard 06:00 / 20:00,
+ *              Europe/Berlin), immer der nächste freie Zeitpunkt
+ * - `flex`   → Startzeit + fester Abstand
+ * - `custom` → eigene Zeit pro Video (`cfg.customTimes[unitIndex]`, leer = sofort)
  */
 export function computeSlots(cfg: ShipConfig, count: number, nowMs: number = Date.now()): Slot[] {
   const out: Slot[] = [];
@@ -224,6 +262,29 @@ export function computeSlots(cfg: ShipConfig, count: number, nowMs: number = Dat
 
   if (cfg.mode === "now") {
     for (let i = 0; i < count; i++) out.push({ ms: null, wall: null, label: "SOFORT" });
+    return out;
+  }
+
+  /* Eigene Zeit pro Video — leere Eingabe heißt „sofort“ */
+  if (cfg.mode === "custom") {
+    const times = Array.isArray(cfg.customTimes) ? cfg.customTimes : [];
+    for (let i = 0; i < count; i++) {
+      const parsed = parseDateTimeLocal(String(times[i] ?? ""));
+      if (parsed === null) {
+        out.push({ ms: null, wall: null, label: "SOFORT" });
+        continue;
+      }
+      if (parsed <= minFuture) {
+        out.push({
+          ms: minFuture,
+          wall: msToBerlinWall(minFuture),
+          label: formatSlotLabel(minFuture),
+          bumped: true,
+        });
+        continue;
+      }
+      out.push({ ms: parsed, wall: msToBerlinWall(parsed), label: formatSlotLabel(parsed) });
+    }
     return out;
   }
 
@@ -267,6 +328,43 @@ export function computeSlots(cfg: ShipConfig, count: number, nowMs: number = Dat
   return out;
 }
 
+/** Millisekunden → "YYYY-MM-DDTHH:mm" für ein <input type="datetime-local">. */
+export function msToDateTimeLocal(ms: number): string {
+  const p = berlinParts(new Date(ms));
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`;
+}
+
+/**
+ * Füllt die 10 eigenen Zeiten aus den Slot-Uhrzeiten (Standard 06:00 / 20:00):
+ * erst heute 06:00, heute 20:00, morgen 06:00 … — nur zukünftige Zeiten.
+ */
+export function fillCustomTimes(
+  slotTimes: string[],
+  count = 10,
+  nowMs: number = Date.now()
+): string[] {
+  const times = slotTimes.length ? slotTimes : DEFAULT_SLOT_TIMES;
+  const slots = computeSlots(
+    { ...DEFAULT_SHIP_CONFIG, slotTimes: times, mode: "slots" },
+    count,
+    nowMs
+  );
+  return slots.map((slot) => msToDateTimeLocal(slot.ms ?? nowMs + 10 * 60_000));
+}
+
+/** „06:00 & 20:00“ — Kurzanzeige für Beschriftungen. */
+export const slotTimesLabel = (times: string[]): string => {
+  const list = (times.length ? times : DEFAULT_SLOT_TIMES).filter(Boolean);
+  if (list.length === 0) return "SOFORT";
+  if (list.length === 1) return list[0];
+  return `${list.slice(0, -1).join(" · ")} & ${list[list.length - 1]}`;
+};
+
+/** Prüft eine "HH:mm"-Eingabe. */
+export function validSlotTime(value: string): boolean {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(value.trim());
+}
+
 /* ------------------------------------------------------------------ */
 /*  API-Aufrufe (same-origin → kein CORS, Key bleibt serverseitig)      */
 /* ------------------------------------------------------------------ */
@@ -282,6 +380,8 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const data = await res.json().catch(() => null);
   if (!res.ok || data?.ok === false) {
+    /* 401 = Sitzungs-Token abgelaufen/fehlt → App zurück auf die Passwort-Seite. */
+    if (res.status === 401) notifyGateExpired();
     throw new Error(
       typeof data?.error === "string" ? data.error : `Zernio-Route HTTP ${res.status}`
     );

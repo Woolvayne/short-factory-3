@@ -1,45 +1,54 @@
 # ShortsFactory — Clip Mill Edition
 
-> **🔐 ANLEITUNG ZUERST** — Passwortschutz, Zernio-Versand und Reddit-Intro einrichten:
-> **[docs/ANLEITUNG.md](docs/ANLEITUNG.md)** (Deutsch, Schritt für Schritt, inkl. Troubleshooting)
+> **🔐 NACH DEM DEPLOY ZUERST:** [docs/EINRICHTUNG.md](docs/EINRICHTUNG.md) — Passwortschutz,
+> IP-Sperre, Vercel KV, Zernio-Versand und Sendezeiten einrichten (Deutsch, Schritt für Schritt).
+> Tiefere Details & Troubleshooting: [docs/ANLEITUNG.md](docs/ANLEITUNG.md)
 
 ---
 
-## 0 · Anleitung: Onepage-Passwortschutz (ohne Backend, via Vercel)
+## 0 · Anleitung: Onepage-Passwortschutz mit IP-Sperre (serverseitig)
 
-Eine einzige Seite liegt vor der App: Passwort eingeben → Fabrik öffnet sich. Kein Login-Endpoint,
-keine Datenbank, kein Server-Session-Code — geprüft wird im Browser gegen einen **SHA-256-Hash**,
-der beim Build aus einer Vercel-Environment-Variable eingebrannt wird.
+Eine einzige Seite liegt vor der App: Passwort eingeben → Fabrik öffnet sich. Geprüft wird
+**serverseitig** in `api/auth.js` gegen eine Vercel-Environment-Variable — das Passwort liegt nie im
+Browser-Bundle. Nach **5 Fehlversuchen in Folge** wird die **IP** gesperrt: 5 Min → 15 Min → 1 h →
+6 h → 24 h (jede weitere Sperre eskaliert). Und: **Nach jedem Neuladen wird das Passwort erneut
+verlangt** — das Token lebt nur im Arbeitsspeicher des Tabs (kein localStorage, kein Cookie).
 
-**Schritt 1 — Hash erzeugen**
-
-```bash
-npm install
-npm run password:hash -- "meinSicheresPasswort"
-# │ SHA-256 : 0ead2060b65992dca4769af601a1b3a35ef38cfad2c2c465bb160ea764157c5d
-```
+**Schritt 1 — Passwort ausdenken** (lang & zufällig, am besten aus dem Passwort-Manager).
 
 **Schritt 2 — in Vercel eintragen**
 Projekt → **Settings** → **Environment Variables** → **Add New**
 
 | Feld | Wert |
 | --- | --- |
-| Name | `VITE_APP_PASSWORD_HASH` |
-| Value | der Hash aus Schritt 1 (nicht das Passwort!) |
-| Environments | Production ✔ Preview ✔ Development ✔ |
+| Name | `APP_PASSWORD` |
+| Value | dein Passwort (Klartext — nur serverseitig) |
+| Environments | Production ✔ Preview ✔ |
 
-**Schritt 3 — Neu deployen.** `VITE_*`-Variablen werden **beim Build** ins Bundle geschrieben:
-Deployments → ⋯ → **Redeploy** (ohne Build-Cache) oder neuen Commit pushen.
+**Kein `VITE_`-Prefix!** Alternativ statt Klartext den Hash setzen:
 
-**Schritt 4 — Testen.** Seite öffnen → Passwort-Seite → eingeben → **Fabrik entsperren**.
-„Angemeldet bleiben" speichert die Sitzung im Browser, der Button **SPERREN** oben rechts schließt
-sie wieder. Lokal testest du das Gate mit `.env.local` (steht in `.gitignore`).
+```bash
+npm install
+npm run password:hash -- "meinSicheresPasswort"
+# → den ausgegebenen SHA-256 als APP_PASSWORD_HASH eintragen
+```
 
-Ehrlicher Hinweis: ein Frontend-Gate ist Sichtschutz, keine Server-Autorisierung — der Hash liegt
-im Bundle, also ein langes Passwort wählen. **Die Zernio-Route prüft dasselbe Passwort zusätzlich
-serverseitig** (`x-sf-auth`), dein API-Key kann dadurch nicht von Fremden missbraucht werden.
-Details, CLI-Variante, Passwort wechseln, Troubleshooting:
-**[docs/ANLEITUNG.md → Kapitel 1](docs/ANLEITUNG.md#1--onepage-passwortschutz-ohne-backend)**
+**Schritt 3 — Neu deployen.** Deployments → ⋯ → **Redeploy** (ohne Build-Cache) oder neuen Commit
+pushen — sonst kennt die Function die Variable nicht.
+
+**Schritt 4 — Testen.** Seite öffnen → „PRÜFE SPERRE…" → Passwort → **FABRIK ENTSPERREN**. Falsch
+eingeben zeigt „NOCH 4 VON 5 VERSUCHEN"; nach 5 Fehlversuchen läuft ein Live-Countdown der
+IP-Sperre. **F5 → Passwort erneut eingeben ✔.** Der Button **SPERREN** oben rechts sperrt sofort.
+
+Optional, aber empfohlen: **Vercel KV / Upstash** verbinden (`KV_REST_API_URL`,
+`KV_REST_API_TOKEN`) — dann gilt die IP-Sperre global über alle Serverless-Instanzen. Ohne KV zählt
+jede Instanz für sich (funktioniert, ist aber nicht global). Feintuning per
+`APP_MAX_ATTEMPTS`, `APP_LOCKOUT_MINUTES`, `APP_SESSION_TTL`.
+
+In der App zeigt das Panel **`-- · Einrichtung · nach dem Deploy`** an, welche Schritte noch offen
+sind — inklusive kopierbarer Befehle. Details, CLI-Variante, KV, Troubleshooting:
+**[docs/EINRICHTUNG.md](docs/EINRICHTUNG.md)** ·
+**[docs/ANLEITUNG.md → Kapitel 1](docs/ANLEITUNG.md#1--onepage-passwortschutz--ip-sperre)**
 
 ---
 
@@ -62,8 +71,13 @@ niemals im Browser. Danach neu deployen.
 **Schritt 3** — senden. Panel **`06 · Versand · Zernio`**:
 
 * grüne LED + deine verbundenen Accounts (werden automatisch über `GET /v1/accounts` geholt)
-* **wann raus?** — `SOFORT` (`publishNow`) · `06 & 20 UHR` (ein Video um 6, das nächste um 20 Uhr,
-  Europe/Berlin, Uhrzeiten editierbar) · `FLEXIBEL` (Startzeit + Abstand 15 Min … 1 Tag)
+* **wann raus?** — vier Modi, alle in Europe/Berlin:
+  * `SOFORT` (`publishNow`) — alles geht direkt raus
+  * `06 & 20 UHR` — **Standard**: ein Video um 6 Uhr, das nächste um 20 Uhr, dann der nächste Tag.
+    Uhrzeiten frei editierbar, weitere über `+ SENDZEIT`, Vorlagen wie `09 & 18` oder `3× TÄGLICH`
+  * `EIGENE ZEIT` — eine eigene Uhrzeit **pro Video** (Vorlage auf alle 10 verteilen und/oder jede
+    Zeile einzeln; leeres Feld = sofort, vergangene Zeiten werden automatisch vorgezogen)
+  * `FLEXIBEL` — Startzeit + Abstand 15 Min … 1 Tag
 * **„Alle 10 → Zernio"** = ein Klick, alle gerenderten Videos gehen raus
 * **„→ ZERNIO"** auf jeder Unit-Karte in der Output Bay = nur dieses eine Video
 * zwischen **jedem** Video wartet die Fabrik **exakt 3 Sekunden** (`SHIP_GAP_MS = 3000`) — der
@@ -163,14 +177,17 @@ first-person stories with zero network.
 npm install
 npm run dev        # open the printed URL (narration relay included, same origin)
 npm run build      # static bundle in dist/
-npm run password:hash -- "meinPasswort"   # hash for the gate
+npm run password:hash -- "meinPasswort"   # optional: SHA-256 statt Klartext
 ```
 
 Deploying to Vercel works with zero configuration: everything in `api/` is picked
 up as a Serverless Function automatically (`api/tts.js` for narration,
-`api/zernio.js` for shipping), and the `ws` dependency is installed during build.
-The only environment variables you need are the ones from the guides above —
-`VITE_APP_PASSWORD_HASH` (optional gate) and `ZERNIO_API_KEY` (optional shipping).
+`api/auth.js` for the gate, `api/zernio.js` for shipping), and the `ws` dependency
+is installed during build. The only environment variables you need are the ones
+from the guides above — `APP_PASSWORD` (gate, server-side only) and
+`ZERNIO_API_KEY` (shipping). Optional: `APP_MAX_ATTEMPTS`, `APP_LOCKOUT_MINUTES`,
+`APP_SESSION_TTL` und `KV_REST_API_URL`/`KV_REST_API_TOKEN` für ein globales
+IP-Rate-Limit.
 
 > Lokal ohne `vercel dev` gibt es keine Serverless-Functions: Stimme und Zernio-Versand
 > brauchen `npm run dev` hinter `vercel dev` oder ein Deployment.
@@ -203,7 +220,7 @@ Same origin → no CORS, no apikey, no Supabase anon key, no configuration.
 
 | Piece | Where |
 | --- | --- |
-| Gate | `PasswordGate.tsx` + `lib/gate.ts` — SHA-256 against `VITE_APP_PASSWORD_HASH`, session/localStorage, no backend |
+| Gate | `PasswordGate.tsx` + `lib/gate.ts` + `api/auth.js` — Passwort wird serverseitig gegen `APP_PASSWORD`/`APP_PASSWORD_HASH` geprüft; 5 Fehlversuche pro IP → eskalierende Sperren (5 min … 24 h), Token nur im Tab-Speicher (F5 = neues Passwort) |
 | Stories | Browser → Qwen/Mistral directly (optional), else offline writer |
 | Voice | Browser → same-origin Vercel Serverless Function `/api/tts` (Node runtime + `ws`) ⇄ Microsoft Edge Read-Aloud WebSocket — free, no API key |
 | Intro | `lib/intro.ts` — Reddit card drawn straight onto the render canvas for the first N seconds |
@@ -222,7 +239,8 @@ tab must stay in the foreground (that's how MediaRecorder captures frames).
 src/
 ├─ App.tsx                     gate → prepare → render → zip → ship
 ├─ components/
-│  ├─ PasswordGate.tsx         the one-page password screen
+│  ├─ PasswordGate.tsx         the one-page password screen (lockout countdown)
+│  ├─ SetupPanel.tsx           “--” panel: setup checklist right after deploy
 │  ├─ Header.tsx               LEDs, clock, marquee, lock button
 │  ├─ SettingsPanel.tsx        6-tab settings console (incl. INTRO)
 │  ├─ IntroPreview.tsx         live canvas preview of the flying Reddit card
@@ -236,9 +254,10 @@ src/
    ├─ gate.ts      intro.ts    zernio.ts   settings.ts   llm.ts   tts.ts
    └─ renderer.ts  clips.ts    media.ts    types.ts
 
-api/        ← tts relay + zernio shipping (Vercel Serverless, Node.js runtime)
+api/        ← auth gate + tts relay + zernio shipping (Vercel Serverless, Node.js)
+              └─ _lib/gate.js  shared gate: password check, HMAC tokens, IP rate limit
 scripts/    ← hash-password.mjs (npm run password:hash)
-docs/       ← ANLEITUNG.md (Deutsch)
+docs/       ← EINRICHTUNG.md (Einrichtung nach dem Deploy) · ANLEITUNG.md (Details, Deutsch)
 supabase/   ← inert legacy v1 (hosted Edge Functions + Shotstack), unused
 ```
 
