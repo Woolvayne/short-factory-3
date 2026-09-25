@@ -7,6 +7,7 @@ import {
   Cpu,
   FileArchive,
   HardDrive,
+  Loader2,
   Mic,
   MessageSquare,
   Radio,
@@ -56,7 +57,13 @@ import {
   type ClipSource,
 } from "./lib/clips";
 import { introOptionsFor } from "./lib/intro";
-import { gateEnabled, isUnlocked, lock as lockGate, unlock as unlockGate } from "./lib/gate";
+import {
+  GATE_EXPIRED_EVENT,
+  fetchGateStatus,
+  isUnlocked,
+  lock as lockGate,
+  type GateStatus,
+} from "./lib/gate";
 import {
   SHIP_GAP_MS,
   computeSlots,
@@ -70,6 +77,7 @@ import {
   type ZernioStatus,
 } from "./lib/zernio";
 import PasswordGate from "./components/PasswordGate";
+import SetupPanel from "./components/SetupPanel";
 import ShipPanel, { IDLE_SHIP_RUN, type ShipRun } from "./components/ShipPanel";
 import type { ShipLogEntry, ShipState } from "./lib/types";
 
@@ -93,7 +101,7 @@ const IDLE_FETCH: FetchState = {
 
 type AnyAudioContext = typeof AudioContext;
 
-function Factory({ onLock }: { onLock?: () => void }) {
+function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: GateStatus | null }) {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [ideas, setIdeas] = useState<string[]>(INITIAL_IDEAS);
 
@@ -732,14 +740,18 @@ function Factory({ onLock }: { onLock?: () => void }) {
         }
 
         const cfg = shipCfgRef.current;
-        const needed = dispatched + pendingShipRef.current.length + 2;
-        const slotList = computeSlots(cfg, Math.max(12, needed));
-        const slot =
-          slotList[Math.min(dispatched, Math.max(0, slotList.length - 1))] ?? {
-            ms: null,
-            wall: null,
-            label: "SOFORT",
-          };
+        /* `custom` = eine eigene Zeit pro Video → über den Unit-Index wählen,
+           sonst in Sende-Reihenfolge (Slot 1 geht an das erste Video usw.). */
+        const slotList = computeSlots(cfg, 10);
+        const slotIndex =
+          cfg.mode === "custom"
+            ? item.index
+            : Math.min(dispatched, Math.max(0, slotList.length - 1));
+        const slot = slotList[slotIndex] ?? {
+          ms: null,
+          wall: null,
+          label: "SOFORT",
+        };
         dispatched += 1;
 
         patchShip(item.index, {
@@ -932,6 +944,17 @@ function Factory({ onLock }: { onLock?: () => void }) {
           </span>
         </div>
 
+        {/* Einleitung nach dem Deployen: was fehlt noch? (Panel „--“) */}
+        <div className="mb-6">
+          <SetupPanel
+            gateStatus={gateStatus ?? null}
+            zernioStatus={shipStatus}
+            onOpenShipPanel={() =>
+              document.getElementById("ship-panel")?.scrollIntoView({ behavior: "smooth", block: "start" })
+            }
+          />
+        </div>
+
         <div className="grid gap-5 xl:grid-cols-2">
           <div className="grid content-start gap-5">
             <SettingsPanel settings={settings} onChange={setSettings} disabled={busy} />
@@ -1012,7 +1035,7 @@ function Factory({ onLock }: { onLock?: () => void }) {
           />
         </div>
 
-        <div className="mt-5">
+        <div className="mt-5" id="ship-panel">
           <ShipPanel
             cfg={shipCfg}
             onCfgChange={setShipCfg}
@@ -1135,27 +1158,74 @@ function Factory({ onLock }: { onLock?: () => void }) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Onepage Passwort-Schutz (ohne Backend)                             */
+/*  Onepage Passwort-Schutz (serverseitig, mit IP-Rate-Limit)          */
 /*                                                                      */
-/*  Ist VITE_APP_PASSWORD_HASH bzw. VITE_APP_PASSWORD gesetzt, rendert   */
-/*  die App AUSSCHLIESSLICH die Passwort-Seite, bis das richtige         */
-/*  Passwort eingegeben wurde. Die Fabrik dahinter wird gar nicht erst   */
-/*  gemountet. Anleitung: docs/ANLEITUNG.md                             */
+/*  Ist auf dem Server `APP_PASSWORD` / `APP_PASSWORD_HASH` gesetzt      */
+/*  (oder lokal `VITE_APP_PASSWORD_HASH`), rendert die App               */
+/*  AUSSCHLIESSLICH die Passwort-Seite, bis das richtige Passwort        */
+/*  eingegeben wurde. Die Fabrik dahinter wird gar nicht erst gemountet. */
+/*  Geprüft wird über `/api/auth`, gesperrt wird pro IP. Das Token liegt  */
+/*  nur im Arbeitsspeicher → jedes Neuladen verlangt das Passwort neu.    */
+/*  Anleitung: docs/EINRICHTUNG.md                                      */
 /* ------------------------------------------------------------------ */
 
-export default function App() {
-  const [unlocked, setUnlocked] = useState<boolean>(() => !gateEnabled() || isUnlocked());
+/** Kurzer Splash, während der Gate-Status vom Server geholt wird. */
+function GateBoot() {
+  return (
+    <div className="grain relative flex min-h-dvh flex-col items-center justify-center gap-4 bg-coal-950">
+      <div className="bg-blueprint pointer-events-none absolute inset-0 opacity-90" />
+      <Loader2 className="size-5 animate-spin text-volt-400" />
+      <p className="mono-label relative z-10 text-[9px] tracking-[0.22em] text-coal-400">
+        SICHERHEITSPRÜFUNG LÄUFT…
+      </p>
+    </div>
+  );
+}
 
-  const handleUnlock = useCallback((token: string, remember: boolean) => {
-    unlockGate(token, remember);
-    setUnlocked(true);
+export default function App() {
+  const [stage, setStage] = useState<"checking" | "locked" | "open">("checking");
+  const [gateStatus, setGateStatus] = useState<GateStatus | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    void fetchGateStatus().then((status) => {
+      if (!alive) return;
+      setGateStatus(status);
+      setStage(!status.requirePassword || isUnlocked() ? "open" : "locked");
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const handleUnlock = useCallback(() => {
+    setStage("open");
+    /* Zähler der IP wurde serverseitig zurückgesetzt → Status neu ziehen. */
+    void fetchGateStatus().then(setGateStatus);
   }, []);
 
   const handleLock = useCallback(() => {
     lockGate();
-    setUnlocked(false);
+    setStage("locked");
+    void fetchGateStatus().then(setGateStatus);
   }, []);
 
-  if (!unlocked) return <PasswordGate onUnlock={handleUnlock} />;
-  return <Factory onLock={gateEnabled() ? handleLock : undefined} />;
+  /* Token abgelaufen (401 aus /api/zernio) → zurück zur Passwort-Seite. */
+  useEffect(() => {
+    const onExpired = () => {
+      lockGate();
+      setStage((current) => (current === "open" ? "locked" : current));
+    };
+    window.addEventListener(GATE_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(GATE_EXPIRED_EVENT, onExpired);
+  }, []);
+
+  if (stage === "checking") return <GateBoot />;
+  if (stage === "locked") return <PasswordGate onUnlock={handleUnlock} />;
+  return (
+    <Factory
+      onLock={gateStatus?.requirePassword ? handleLock : undefined}
+      gateStatus={gateStatus}
+    />
+  );
 }
