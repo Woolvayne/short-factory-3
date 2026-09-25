@@ -4,6 +4,7 @@ import {
   Clock,
   CloudUpload,
   Hash,
+  Inbox,
   Loader2,
   RefreshCw,
   Rocket,
@@ -91,6 +92,7 @@ export default function ShipPanel({
   shipStates,
   run,
   onShipAll,
+  onShipAllToQueue,
   onShipOne,
   onCancelShip,
   log,
@@ -104,7 +106,11 @@ export default function ShipPanel({
   items: LocalRenderItem[];
   shipStates: Record<number, ShipState>;
   run: ShipRun;
+  /** öffnet den Sendeplan-Dialog für alle fertigen Videos */
   onShipAll: () => void;
+  /** ein Klick, kein Dialog: alle auf einmal in die Queue (nächste freie Sendeplätze) */
+  onShipAllToQueue: () => void;
+  /** öffnet den Sendeplan-Dialog für ein einzelnes Video */
   onShipOne: (index: number) => void;
   onCancelShip: () => void;
   log: ShipLogEntry[];
@@ -116,6 +122,8 @@ export default function ShipPanel({
     [done, shipStates]
   );
   const slots = useMemo(() => computeSlots(cfg, 10), [cfg]);
+  /** Units, die über den Sendeplan-Dialog schon eine feste Zeit haben */
+  const plannedCount = items.filter((i) => shipStates[i.index]?.slotLabel).length;
   const ready = Boolean(status?.configured) && done.length > 0;
   const set = <K extends keyof ShipConfig>(key: K, value: ShipConfig[K]) =>
     onCfgChange({ ...cfg, [key]: value });
@@ -420,25 +428,31 @@ export default function ShipPanel({
             onChange={(v) => set("asDraft", v)}
           />
 
-          {/* Slot-Vorschau — Liste, kein Kalender */}
-          {cfg.mode !== "now" && (
+          {/* Slot-Vorschau — Liste, kein Kalender. Zeigt verplante Units mit ihrer
+              echten Zeit aus dem Sendeplan-Dialog. */}
+          {(cfg.mode !== "now" || plannedCount > 0) && (
             <div className="border border-coal-700/80 bg-coal-950/40 p-2.5">
               <p className="mono-label mb-2 flex items-center justify-between gap-2 text-[9px] text-coal-400">
                 <span className="flex items-center gap-1.5">
                   <Clock className="size-3" /> SENDEPLAN (10 VIDEOS)
                 </span>
                 <span className="text-coal-500">
-                  {cfg.mode === "custom"
-                    ? "EIGENE ZEIT PRO VIDEO"
-                    : cfg.mode === "flex"
-                      ? `ABSTAND ${cfg.flexIntervalMinutes} MIN`
-                      : slotTimesLabel(cfg.slotTimes)}
+                  {plannedCount > 0
+                    ? `${plannedCount} × VERPLANT`
+                    : cfg.mode === "custom"
+                      ? "EIGENE ZEIT PRO VIDEO"
+                      : cfg.mode === "flex"
+                        ? `ABSTAND ${cfg.flexIntervalMinutes} MIN`
+                        : slotTimesLabel(cfg.slotTimes)}
                 </span>
               </p>
               <ol className="grid gap-1">
                 {slots.map((slot, i) => {
                   const unit = items[i];
                   const state = unit ? shipStates[unit.index] : undefined;
+                  /* echte Planung aus dem Dialog schlägt die Panel-Vorschau */
+                  const label = state?.slotLabel ?? slot.label;
+                  const planned = Boolean(state?.slotLabel);
                   return (
                     <li
                       key={i}
@@ -450,16 +464,25 @@ export default function ShipPanel({
                       <span
                         className={cn(
                           "font-mono text-[9.5px] tracking-wider",
-                          slot.bumped ? "text-amber-warn" : "text-coal-200"
+                          planned
+                            ? state?.status === "sent"
+                              ? "text-volt-300"
+                              : "text-ember-400"
+                            : slot.bumped
+                              ? "text-amber-warn"
+                              : "text-coal-200"
                         )}
                         title={
-                          slot.bumped
-                            ? "Die eingestellte Zeit lag in der Vergangenheit — wird auf „jetzt“ vorgezogen."
-                            : undefined
+                          planned
+                            ? `Zeit aus dem Sendeplan-Dialog${state?.status === "queued" ? " — wartet in der Queue" : ""}`
+                            : slot.bumped
+                              ? "Die eingestellte Zeit lag in der Vergangenheit — wird auf „jetzt“ vorgezogen."
+                              : undefined
                         }
                       >
-                        {slot.label}
-                        {slot.bumped ? " (VORGEZOGEN)" : ""}
+                        {label}
+                        {slot.bumped && !planned ? " (VORGEZOGEN)" : ""}
+                        {planned && state?.status === "queued" ? " · QUEUE" : ""}
                       </span>
                       {state?.status === "sent" && (
                         <BadgeCheck className="size-3 shrink-0 text-volt-400" />
@@ -532,13 +555,33 @@ export default function ShipPanel({
                 Zernio Dispatch
               </p>
               <p className="mono-label mt-0.5 text-[9px] leading-relaxed text-coal-400">
-                EIN KLICK = ALLE FERTIGEN VIDEOS · {SHIP_GAP_MS / 1000} s PAUSE ZWISCHEN JEDEM VIDEO
+                SENDEPLAN WÄHLEN (SOFORT · EIGENE ZEIT · QUEUE · FLEXIBEL) ODER ALLE DIREKT IN DIE
+                QUEUE · {SHIP_GAP_MS / 1000} s PAUSE ZWISCHEN JEDEM VIDEO
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {run.active ? (
+            {/* Ein Klick, kein Dialog: ALLE auf einmal in die Queue (nächste freie Sendeplätze) */}
+            <button
+              type="button"
+              onClick={onShipAllToQueue}
+              disabled={!ready || busy}
+              title={`Alle ${notSent.length || done.length} Videos auf einmal in die Queue — Sendeplan ${slotTimesLabel(
+                cfg.slotTimes
+              )}`}
+              className={cn(
+                "flex min-h-[44px] items-center gap-2 border px-4 py-2.5 font-display text-sm font-black tracking-tight uppercase",
+                ready && !busy
+                  ? "border-volt-400/60 bg-volt-400/10 text-volt-300 hover:bg-volt-400/20"
+                  : "border-coal-700 text-coal-500"
+              )}
+            >
+              <Inbox className="size-4" strokeWidth={2.4} />
+              {notSent.length > 0 ? `Alle ${notSent.length} → Queue` : `Alle ${done.length} → Queue`}
+            </button>
+
+            {run.active && (
               <button
                 type="button"
                 onClick={onCancelShip}
@@ -546,28 +589,30 @@ export default function ShipPanel({
               >
                 <TriangleAlert className="size-4" /> STOP
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onShipAll}
-                disabled={!ready || busy}
-                className={cn(
-                  "flex min-h-[44px] items-center gap-2 border px-4 py-2.5 font-display text-sm font-black tracking-tight uppercase",
-                  ready && !busy
-                    ? "glow-volt bg-heat border-volt-400 text-coal-950 hover:opacity-90"
-                    : "border-coal-700 text-coal-500"
-                )}
-              >
-                {notSent.length > 0 && notSent.length !== done.length ? (
-                  <Send className="size-4" strokeWidth={2.4} />
-                ) : (
-                  <Rocket className="size-4" strokeWidth={2.4} />
-                )}
-                {notSent.length > 0
-                  ? `${notSent.length} Video${notSent.length === 1 ? "" : "s"} → Zernio`
-                  : `Alle ${done.length} erneut → Zernio`}
-              </button>
             )}
+
+            {/* öffnet den Sendeplan-Dialog für den ganzen Stapel */}
+            <button
+              type="button"
+              onClick={onShipAll}
+              disabled={!ready || busy}
+              title="Sendeplan für alle fertigen Videos wählen — sofort, eigene Zeit, Queue oder flexibel"
+              className={cn(
+                "flex min-h-[44px] items-center gap-2 border px-4 py-2.5 font-display text-sm font-black tracking-tight uppercase",
+                ready && !busy
+                  ? "glow-volt bg-heat border-volt-400 text-coal-950 hover:opacity-90"
+                  : "border-coal-700 text-coal-500"
+              )}
+            >
+              {notSent.length > 0 && notSent.length !== done.length ? (
+                <Send className="size-4" strokeWidth={2.4} />
+              ) : (
+                <Rocket className="size-4" strokeWidth={2.4} />
+              )}
+              {notSent.length > 0
+                ? `${notSent.length} Video${notSent.length === 1 ? "" : "s"} → Zernio`
+                : `Alle ${done.length} erneut → Zernio`}
+            </button>
           </div>
         </div>
 
@@ -617,33 +662,51 @@ export default function ShipPanel({
       {/* -------------------------------------------------- Einzelversand */}
       {done.length > 0 && (
         <div className="mt-4">
-          <p className="mono-label mb-2 text-[9px] text-coal-400">EINZELVERSAND</p>
+          <p className="mono-label mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[9px] text-coal-400">
+            EINZELVERSAND
+            <span className="font-mono text-[8.5px] tracking-wider text-coal-500">
+              KLICK = SENDEPLAN-DIALOG (SOFORT · EIGENE ZEIT · QUEUE)
+            </span>
+          </p>
           <div className="flex flex-wrap gap-1.5">
             {done.map((item) => {
               const state = shipStates[item.index];
+              const sent = state?.status === "sent";
               return (
                 <button
                   key={item.index}
                   type="button"
                   onClick={() => onShipOne(item.index)}
-                  disabled={run.active || state?.status === "sent"}
+                  disabled={sent}
                   className={cn(
                     "flex min-h-[34px] items-center gap-1.5 border px-2.5 py-1.5 font-mono text-[9.5px] font-bold tracking-widest disabled:opacity-45",
-                    state?.status === "sent"
+                    sent
                       ? "border-volt-400/60 bg-volt-400/10 text-volt-300"
                       : state?.status === "error"
                         ? "border-rose-err/60 bg-rose-err/10 text-rose-err"
-                        : "border-coal-600 bg-coal-850 text-coal-200 hover:border-volt-400 hover:text-volt-300"
+                        : state?.status === "queued"
+                          ? "border-ember-500/60 bg-ember-500/10 text-ember-400"
+                          : "border-coal-600 bg-coal-850 text-coal-200 hover:border-volt-400 hover:text-volt-300"
                   )}
-                  title={state?.error ?? item.idea}
+                  title={
+                    state?.error ??
+                    `Sendeplan für Unit ${String(item.index + 1).padStart(2, "0")} wählen — ${item.idea}`
+                  }
                 >
-                  {state?.status === "sent" ? (
+                  {sent ? (
                     <BadgeCheck className="size-3" />
+                  ) : state?.status === "queued" ? (
+                    <Inbox className="size-3" />
                   ) : (
                     <Send className="size-3" />
                   )}
                   {String(item.index + 1).padStart(2, "0")} ·{" "}
                   {state ? shipStateLabel(state) : "SENDEN"}
+                  {state?.slotLabel && (
+                    <span className={cn("font-normal", sent ? "text-volt-300/70" : "text-coal-500")}>
+                      · {state.slotLabel}
+                    </span>
+                  )}
                 </button>
               );
             })}

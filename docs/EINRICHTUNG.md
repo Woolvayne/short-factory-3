@@ -189,6 +189,25 @@ Für jeden der 10 Clips ein eigenes Datum **und** eine eigene Uhrzeit:
 Startzeit + fester Abstand (15 Min, 30 Min, 1 h, 2 h, 6 h, 12 h, 1 Tag). Liegt die Startzeit in der
 Vergangenheit, wird auf den nächsten freien Takt vorgespult.
 
+### 4.5 Sendeplan-Dialog — pro Post entscheiden (und alle auf einmal in die Queue)
+
+Die vier Modi oben sind die **Vorbelegung**. Beim Klicken auf einen Versand-Button öffnet ein
+Fenster, in dem du den Plan für genau diesen Versand festlegst:
+
+* **`→ ZERNIO`** auf einer Unit-Karte (Output Bay `05`) oder ein Chip unter **„Einzelversand"** →
+  Dialog für **ein** Video: `SOFORT` · `EIGENE ZEIT` (frei planen, mit Chips `+15 MIN` `+1 STD`
+  `+3 STD` `20 UHR` `06 UHR`) · `IN DIE QUEUE` (nächster freier Sendeplatz, Position per `−`/`+`).
+* **`10 Videos → Zernio`** im Panel `06` → derselbe Dialog für **alle** fertigen Videos:
+  `ALLE SOFORT` · `ALLE → QUEUE` · `FLEXIBEL` (Start + Abstand) · `EIGENE ZEITEN`.
+* **`Alle 10 → Queue`** im Panel `06` → **ein Klick, kein Dialog**: alle Videos landen
+  gleichzeitig in der Warteschlange, jedes auf dem nächsten freien Sendeplatz.
+* Im Dialog zusätzlich: Titel/Hashtags **nur für diesen Versand** (leer = Panel-Wert),
+  **„Als Entwurf speichern"**, Ziel-Accounts und die Vorschau **„DEIN SENDEPLAN"**.
+* Slots werden nicht doppelt belegt: Was schon in der Queue liegt, zählt mit — ein neuer Post
+  rutscht automatisch auf den nächsten freien Zeitpunkt.
+* `Esc` = schließen · `Strg/Cmd + Enter` = senden · während eine Queue läuft, wird ein neuer Plan
+  einfach angehängt.
+
 > **Extra-Tipp:** Schalter **„ALS ENTWURF SPEICHERN"** aktivieren → die Posts landen als `draft` bei
 > Zernio und werden nicht veröffentlicht. Perfekt für den ersten Testlauf mit echtem Key.
 
@@ -253,7 +272,7 @@ Auf Vercel:
 - [ ] 5× falsch eingeben → Meldung „IP GESPERRT" mit Countdown ✔
 - [ ] Panel `--` oben zeigt alle Häkchen grün
 - [ ] Panel `06` → Button **API** → grüne LED + Accounts
-- [ ] Sendezeiten wählen (Standard 06:00 / 20:00 oder „EIGENE ZEIT")
+- [ ] Sendezeiten wählen (Standard 06:00 / 20:00 oder „EIGENE ZEIT") — pro Post im Sendeplan-Dialog, alle auf einmal über **`Alle → Queue`**
 - [ ] ersten Testlauf mit **„Als Entwurf speichern"** machen
 
 ---

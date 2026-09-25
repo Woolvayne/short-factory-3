@@ -78,15 +78,43 @@ niemals im Browser. Danach neu deployen.
   * `EIGENE ZEIT` — eine eigene Uhrzeit **pro Video** (Vorlage auf alle 10 verteilen und/oder jede
     Zeile einzeln; leeres Feld = sofort, vergangene Zeiten werden automatisch vorgezogen)
   * `FLEXIBEL` — Startzeit + Abstand 15 Min … 1 Tag
-* **„Alle 10 → Zernio"** = ein Klick, alle gerenderten Videos gehen raus
-* **„→ ZERNIO"** auf jeder Unit-Karte in der Output Bay = nur dieses eine Video
+* **„Alle 10 → Zernio"** = ein Klick, alle gerenderten Videos gehen raus — vorher öffnet der
+  **Sendeplan-Dialog** (siehe unten)
+* **„Alle → Queue"** = ein Klick, **kein** Dialog: alle Videos landen gleichzeitig in der
+  Warteschlange und bekommen reihum die nächsten freien Sendeplätze
+* **„→ ZERNIO"** auf jeder Unit-Karte in der Output Bay = nur dieses eine Video → öffnet den
+  **Sendeplan-Dialog** für genau diesen Post
+
+### Sendeplan-Dialog (ein Post oder alle auf einmal)
+
+Statt sofort loszuschicken, fragt die App beim Klick auf **→ ZERNIO** (Unit-Karte,
+„Einzelversand") bzw. **Alle → Zernio** (Panel `06`) in einem Fenster nach, **wie** der Post
+raus soll — flexibel, pro Post, mit Live-Vorschau des fertigen Sendeplans:
+
+| Auswahl | Einzelner Post | Alle Videos gleichzeitig |
+| --- | --- | --- |
+| `SOFORT` | ✔ `publishNow` | ✔ (mit 3 s Takt) |
+| `EIGENE ZEIT` | ✔ frei planen: `datetime-local` + Chips `+15 MIN` `+1 STD` `+3 STD` `20 UHR` `06 UHR` | — |
+| `IN DIE QUEUE` / `ALLE → QUEUE` | ✔ nächster freier Sendeplatz, Position in der Queue per `−`/`+` wählbar | ✔ jedes Video bekommt reihum den nächsten freien Platz |
+| `FLEXIBEL` | — | ✔ Startzeit + Abstand 15 Min … 1 Tag |
+| `EIGENE ZEITEN` | — | ✔ die 10 Zeiten aus dem Panel (eine pro Video) |
+
+Dazu im Dialog: **Post-Titel** und **Hashtags** nur für diesen Versand (leer = Panel-Wert),
+Schalter **„Als Entwurf speichern"**, die verbundenen Accounts als Zielanzeige und die Liste
+**„DEIN SENDEPLAN"** mit der echten Zeit pro Unit. `Esc` schließt, `Strg/Cmd + Enter` sendet.
+
+Bereits verplante Slots in der Queue werden **nicht doppelt belegt** — ein neuer Post rutscht
+automatisch auf den nächsten freien Zeitpunkt (im Dialog als Hinweis, im Plan als
+`(VERSCHOBEN)`).
+
 * zwischen **jedem** Video wartet die Fabrik **exakt 3 Sekunden** (`SHIP_GAP_MS = 3000`) — der
-  Countdown läuft sichtbar mit, **STOP** bricht die Warteschlange ab
+  Countdown läuft sichtbar mit, **STOP** bricht die Warteschlange ab. Während die Queue läuft,
+  kannst du weitere Posts über den Dialog **anhängen**
 * Titel, Hashtags und Caption-Vorlage (`{title}` `{excerpt}` `{story}` `{hashtags}` `{index}`)
   sind einstellbar, plus Schalter **„Als Entwurf speichern"** zum risikofreien Testen
 
 **Kein Kalender.** Der Sendeplan erscheint als schlichte Liste („01 → HEUTE 20:00 · 02 → MORGEN
-06:00 …"), mehr nicht.
+06:00 …"), mehr nicht — im Panel `06` und im Dialog.
 
 Technik: `POST /v1/media/presign` → Video direkt aus dem Browser per `PUT` hochladen (bis 5 GB,
 mit Fortschritt) → `POST /v1/posts` mit `mediaItems`. Bei CORS-Problemen greift automatisch ein

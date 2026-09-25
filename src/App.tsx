@@ -66,8 +66,8 @@ import {
 } from "./lib/gate";
 import {
   SHIP_GAP_MS,
-  computeSlots,
   fetchZernioStatus,
+  fillCustomTimes,
   loadShipConfig,
   saveShipConfig,
   shipFileName,
@@ -76,8 +76,17 @@ import {
   type ShipConfig,
   type ZernioStatus,
 } from "./lib/zernio";
+import {
+  avoidSlotCollisions,
+  configForPlan,
+  defaultPlanFor,
+  slotsForPlan,
+  type ShipPlan,
+  type ShipQueueEntry,
+} from "./lib/shipPlan";
 import PasswordGate from "./components/PasswordGate";
 import SetupPanel from "./components/SetupPanel";
+import ShipDialog from "./components/ShipDialog";
 import ShipPanel, { IDLE_SHIP_RUN, type ShipRun } from "./components/ShipPanel";
 import type { ShipLogEntry, ShipState } from "./lib/types";
 
@@ -132,6 +141,11 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
   const [shipStates, setShipStates] = useState<Record<number, ShipState>>({});
   const [shipRun, setShipRun] = useState<ShipRun>(IDLE_SHIP_RUN);
   const [shipLog, setShipLog] = useState<ShipLogEntry[]>([]);
+  /** offener Sendeplan-Dialog (ein Video oder der ganze Stapel) */
+  const [shipDialog, setShipDialog] = useState<{
+    scope: "single" | "batch";
+    indices: number[];
+  } | null>(null);
 
   const bgsRef = useRef(bgs);
   bgsRef.current = bgs;
@@ -151,7 +165,7 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
   const shipStatesRef = useRef<Record<number, ShipState>>({});
   shipStatesRef.current = shipStates;
   const zernioStatusRef = useRef<ZernioStatus | null>(null);
-  const pendingShipRef = useRef<LocalRenderItem[]>([]);
+  const pendingShipRef = useRef<ShipQueueEntry[]>([]);
   const shipRunningRef = useRef(false);
   const cancelShipRef = useRef<{ cancelled: boolean }>({ cancelled: false });
   const shipDoneRef = useRef(0);
@@ -721,7 +735,13 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
 
       while (pendingShipRef.current.length > 0) {
         if (cancelShipRef.current.cancelled) break;
-        const item = pendingShipRef.current.shift()!;
+        const entry = pendingShipRef.current.shift()!;
+        /* Slot + Config hängen am Queue-Eintrag (Sendeplan-Dialog) und nicht
+           mehr global am Panel — so bekommt jeder Post seinen eigenen Zeitpunkt. */
+        const { slot, cfg } = entry;
+        /* Wurde das Unit nach dem Einreihen neu gerendert, zählt die frische Blob-Version. */
+        const fresher = itemsRef.current.find((i) => i.index === entry.item.index);
+        const item = fresher?.status === "done" && fresher.blob ? fresher : entry.item;
         pushShipRun({ active: true, currentIndex: item.index });
 
         /* Pflicht-Pause: zwischen JEDEM Video exakt 3 Sekunden warten */
@@ -739,19 +759,6 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
           }
         }
 
-        const cfg = shipCfgRef.current;
-        /* `custom` = eine eigene Zeit pro Video → über den Unit-Index wählen,
-           sonst in Sende-Reihenfolge (Slot 1 geht an das erste Video usw.). */
-        const slotList = computeSlots(cfg, 10);
-        const slotIndex =
-          cfg.mode === "custom"
-            ? item.index
-            : Math.min(dispatched, Math.max(0, slotList.length - 1));
-        const slot = slotList[slotIndex] ?? {
-          ms: null,
-          wall: null,
-          label: "SOFORT",
-        };
         dispatched += 1;
 
         patchShip(item.index, {
@@ -804,7 +811,7 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
       }
     } catch (e) {
       const message = String(e instanceof Error ? e.message : e).slice(0, 240);
-      for (const queued of pendingShipRef.current) patchShip(queued.index, { status: "error", error: message });
+      for (const queued of pendingShipRef.current) patchShip(queued.item.index, { status: "error", error: message });
       pendingShipRef.current = [];
       pushShipRun({ error: message });
     } finally {
@@ -818,44 +825,147 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
     }
   }, [patchShip, pushShipRun]);
 
+  /**
+   * Reiht Videos mit einem fertigen Sendeplan in die Warteschlange ein.
+   * Der Plan (sofort · eigene Zeit · Queue · flexibel) kommt aus dem
+   * Sendeplan-Dialog und wird hier EINMAL in konkrete Slots übersetzt —
+   * inklusive Kollisionsprüfung gegen Slots, die schon in der Queue liegen.
+   */
   const enqueueShip = useCallback(
-    (targets: LocalRenderItem[]) => {
+    (targets: LocalRenderItem[], plan: ShipPlan): number => {
       const inFlight: ShipState["status"][] = ["queued", "uploading", "publishing", "waiting"];
       const ready = targets.filter((t) => t.status === "done" && t.blob);
       const fresh = ready.filter((t) => {
-        if (pendingShipRef.current.some((queued) => queued.index === t.index)) return false;
+        if (pendingShipRef.current.some((queued) => queued.item.index === t.index)) return false;
         const state = shipStatesRef.current[t.index]?.status;
         return !state || !inFlight.includes(state);
       });
-      if (fresh.length === 0) return;
+      if (fresh.length === 0) return 0;
+
+      const cfg = shipCfgRef.current;
+      const now = Date.now();
+      /* Was in der Queue schon verplant ist: keine Doppelbuchung eines Slots,
+         und „IN DIE QUEUE" reiht sich hinter den wartenden Queue-Plätzen ein. */
+      const scheduled = pendingShipRef.current.filter((e) => e.slot.ms !== null);
+      const taken = new Set(scheduled.map((e) => e.slot.ms as number));
+      const queuedSlots = scheduled.filter((e) => e.via === "queue").length;
+      const effectivePlan: ShipPlan =
+        plan.kind === "queue" ? { ...plan, queueOffset: plan.queueOffset + queuedSlots } : plan;
+
+      /* „EIGENE ZEITEN" wählt die Zeit über den Unit-Index, alles andere in Reihenfolge. */
+      const byUnitIndex = effectivePlan.kind === "custom";
+      const rawSlots = slotsForPlan(effectivePlan, cfg, byUnitIndex ? 10 : fresh.length, now);
+      const stepMs =
+        effectivePlan.kind === "series" || (effectivePlan.kind === "at" && fresh.length > 1)
+          ? Math.max(1, effectivePlan.intervalMinutes) * 60_000
+          : 5 * 60_000;
+      const slots =
+        effectivePlan.kind === "custom" || effectivePlan.kind === "now"
+          ? rawSlots
+          : avoidSlotCollisions(rawSlots, taken, stepMs);
+      const batchCfg = configForPlan(effectivePlan, cfg);
+      const sofort = { ms: null, wall: null, label: "SOFORT" } as const;
+
+      const entries: ShipQueueEntry[] = fresh.map((item, position) => ({
+        item,
+        slot: (byUnitIndex ? slots[item.index] : slots[position]) ?? { ...sofort },
+        cfg: batchCfg,
+        via: effectivePlan.kind,
+      }));
+
       cancelShipRef.current = { cancelled: false };
-      for (const item of fresh) patchShip(item.index, { status: "queued", progress: 0, error: undefined });
-      pendingShipRef.current.push(...fresh);
-      shipTotalRef.current += fresh.length;
+      for (const entry of entries) {
+        patchShip(entry.item.index, {
+          status: "queued",
+          progress: 0,
+          error: undefined,
+          slotLabel: entry.slot.label,
+          scheduledFor: entry.slot.wall ?? null,
+        });
+      }
+      pendingShipRef.current.push(...entries);
+      shipTotalRef.current += entries.length;
       pushShipRun({ active: true, error: null });
       void runShipQueue();
+      return entries.length;
     },
     [patchShip, pushShipRun, runShipQueue]
   );
 
-  const shipOne = useCallback(
-    (index: number) => {
-      const item = itemsRef.current.find((i) => i.index === index);
-      if (item) enqueueShip([item]);
+  /* ------------------------------------------------------------ */
+  /*  Sendeplan-Dialog: Einzelversand UND „alle auf einmal"        */
+  /* ------------------------------------------------------------ */
+
+  /** Alle gerenderten Units, die noch nicht gesendet sind (sonst alle fertigen). */
+  const shippableTargets = useCallback(
+    () => {
+      const done = itemsRef.current.filter((i) => i.status === "done" && i.blob);
+      const notSent = done.filter((i) => shipStatesRef.current[i.index]?.status !== "sent");
+      return notSent.length ? notSent : done;
     },
-    [enqueueShip]
+    []
   );
 
+  /** „→ ZERNIO" an einer Unit-Karte / im Einzelversand → Dialog mit dem Sendeplan. */
+  const shipOne = useCallback((index: number) => {
+    const item = itemsRef.current.find((i) => i.index === index);
+    if (!item || item.status !== "done" || !item.blob) return;
+    setShipDialog({ scope: "single", indices: [index] });
+  }, []);
+
+  /** „Alle → Zernio" → derselbe Dialog, nur für den ganzen Stapel. */
   const shipAll = useCallback(() => {
-    const targets = itemsRef.current.filter(
-      (i) => i.status === "done" && shipStatesRef.current[i.index]?.status !== "sent"
+    const targets = shippableTargets();
+    if (targets.length === 0) return;
+    setShipDialog({ scope: "batch", indices: targets.map((t) => t.index) });
+  }, [shippableTargets]);
+
+  /** Ein Klick, kein Dialog: ALLE auf einmal in die Queue (nächste freie Sendeplätze). */
+  const shipAllToQueue = useCallback(() => {
+    const targets = shippableTargets();
+    if (targets.length === 0) return 0;
+    /* bewusst immer `queue` — unabhängig davon, welcher Modus im Panel 06 steht */
+    const plan: ShipPlan = {
+      ...defaultPlanFor(shipCfgRef.current, "batch"),
+      kind: "queue",
+      queueOffset: 0,
+    };
+    return enqueueShip(targets, plan);
+  }, [enqueueShip, shippableTargets]);
+
+  /** Dialog bestätigt → Plan in die Queue, Entwurfs-Schalter ins Panel übernehmen. */
+  const confirmShipPlan = useCallback(
+    (plan: ShipPlan) => {
+      const indices = shipDialog?.indices ?? [];
+      const targets = itemsRef.current.filter((i) => indices.includes(i.index));
+      setShipDialog(null);
+      if (targets.length === 0) return;
+      setShipCfg((cfg) => (cfg.asDraft === plan.asDraft ? cfg : { ...cfg, asDraft: plan.asDraft }));
+      enqueueShip(targets, plan);
+    },
+    [enqueueShip, shipDialog]
+  );
+
+  const closeShipDialog = useCallback(() => setShipDialog(null), []);
+
+  /** Dialog → „EIGENE ZEITEN" im Panel bearbeiten. */
+  const editPanelTimes = useCallback(() => {
+    setShipDialog(null);
+    setShipCfg((cfg) => ({
+      ...cfg,
+      mode: "custom",
+      customTimes: cfg.customTimes.length ? cfg.customTimes : fillCustomTimes(cfg.slotTimes, 10),
+    }));
+    window.requestAnimationFrame(() =>
+      document.getElementById("ship-panel")?.scrollIntoView({ behavior: "smooth", block: "start" })
     );
-    enqueueShip(targets.length ? targets : itemsRef.current.filter((i) => i.status === "done"));
-  }, [enqueueShip]);
+  }, []);
 
   const cancelShip = useCallback(() => {
     cancelShipRef.current.cancelled = true;
-    for (const queued of pendingShipRef.current) patchShip(queued.index, { status: "idle", progress: 0 });
+    for (const queued of pendingShipRef.current) {
+      patchShip(queued.item.index, { status: "idle", progress: 0, slotLabel: undefined });
+    }
     pendingShipRef.current = [];
     pushShipRun({ pending: 0, waitMs: 0 });
   }, [patchShip, pushShipRun]);
@@ -865,6 +975,17 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
   const stagedCount = items.filter((r) => r.status === "staged").length;
   const keyed = hasAnyLLMKey(settings);
   const renderProgress = (doneCount + errorCount + activeProgress) / 10;
+
+  /** Die Units, für die der Sendeplan-Dialog gerade offen ist. */
+  const shipDialogTargets = useMemo(
+    () =>
+      shipDialog
+        ? shipDialog.indices
+            .map((index) => items.find((i) => i.index === index))
+            .filter((i): i is LocalRenderItem => Boolean(i && i.status === "done"))
+        : [],
+    [shipDialog, items]
+  );
 
   /* ------------------------------------------------------------ */
 
@@ -1031,7 +1152,7 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
             onRenderOne={renderOne}
             onShipOne={shipOne}
             shipStates={shipStates}
-            shipBusy={busy || shipRun.active}
+            shipBusy={busy}
           />
         </div>
 
@@ -1046,6 +1167,7 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
             shipStates={shipStates}
             run={shipRun}
             onShipAll={shipAll}
+            onShipAllToQueue={shipAllToQueue}
             onShipOne={shipOne}
             onCancelShip={cancelShip}
             log={shipLog}
@@ -1074,6 +1196,20 @@ function Factory({ onLock, gateStatus }: { onLock?: () => void; gateStatus?: Gat
         </footer>
       </main>
 
+      {/* Sendeplan-Dialog: ein Post (Output Bay / Einzelversand) oder alle auf einmal */}
+      {shipDialog && shipDialogTargets.length > 0 && (
+        <ShipDialog
+          scope={shipDialog.scope}
+          targets={shipDialogTargets}
+          cfg={shipCfg}
+          status={shipStatus}
+          pendingScheduled={shipRun.pending}
+          running={shipRun.active}
+          onClose={closeShipDialog}
+          onConfirm={confirmShipPlan}
+          onEditPanelTimes={editPanelTimes}
+        />
+      )}
 
       {shipRun.active && !busy && (
         <div
