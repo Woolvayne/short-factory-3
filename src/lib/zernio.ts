@@ -207,6 +207,8 @@ export interface Slot {
   label: string;
   /** true = die eingestellte Zeit lag in der Vergangenheit und wurde auf „jetzt“ vorgezogen */
   bumped?: boolean;
+  /** true = der Slot war schon belegt und wurde in der Queue nach hinten geschoben */
+  shifted?: boolean;
 }
 
 const WEEKDAYS = ["SO", "MO", "DI", "MI", "DO", "FR", "SA"];
@@ -236,14 +238,14 @@ function parseTime(hhmm: string): { hour: number; minute: number } | null {
 }
 
 /** "YYYY-MM-DDTHH:mm" aus einem <input type="datetime-local"> */
-function parseDateTimeLocal(value: string): number | null {
+export function parseDateTimeLocal(value: string): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(value.trim());
   if (!m) return null;
   return berlinWallToMs(Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]));
 }
 
-export function defaultFlexStart(): string {
-  const ms = Date.now() + 10 * 60_000;
+export function defaultFlexStart(nowMs: number = Date.now()): string {
+  const ms = nowMs + 10 * 60_000;
   const p = berlinParts(new Date(ms));
   return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`;
 }

@@ -357,7 +357,7 @@ export function OutputPanel({
   activeProgress: number;
   onBuildZip: () => void;
   onRenderOne: (index: number) => void;
-  /** einzelnes Video nach dem Rendern zu Zernio schicken */
+  /** einzelnes Video nach dem Rendern zu Zernio schicken — öffnet den Sendeplan-Dialog */
   onShipOne: (index: number) => void;
   shipStates: Record<number, ShipState>;
   shipBusy: boolean;
@@ -533,13 +533,17 @@ export function OutputPanel({
                   </button>
                 )}
 
-                {/* Zernio-Versand: erst nachdem das Video gerendert ist */}
+                {/* Zernio-Versand: erst nachdem das Video gerendert ist.
+                    Klick öffnet den Sendeplan-Dialog (sofort · eigene Zeit · Queue). */}
                 {item.status === "done" && (
                   <button
                     type="button"
                     onClick={() => onShipOne(item.index)}
                     disabled={shipBusy || ship?.status === "sent" || ship?.status === "uploading"}
-                    title={ship?.error ?? "Nach dem Rendern direkt zu Zernio senden"}
+                    title={
+                      ship?.error ??
+                      "Sendeplan für dieses Video wählen — sofort, eigene Zeit oder in die Queue"
+                    }
                     className={cn(
                       "flex min-h-[34px] w-full items-center justify-center gap-1.5 border px-2 py-1.5 font-mono text-[9.5px] font-bold tracking-widest transition-colors disabled:opacity-45",
                       ship?.status === "sent"
@@ -560,6 +564,20 @@ export function OutputPanel({
                     )}
                     {ship && ship.status !== "idle" ? shipStateLabel(ship) : "→ ZERNIO"}
                   </button>
+                )}
+
+                {/* verplante Sendezeit aus dem Dialog */}
+                {item.status === "done" && ship?.slotLabel && ship.status !== "idle" && (
+                  <p
+                    className={cn(
+                      "flex items-center gap-1.5 font-mono text-[8.5px] tracking-wider",
+                      ship.status === "error" ? "text-coal-500" : "text-ember-400"
+                    )}
+                  >
+                    <Timer className="size-3 shrink-0" />
+                    <span className="truncate">{ship.slotLabel}</span>
+                    {ship.status === "queued" && <span className="text-coal-500">· QUEUE</span>}
+                  </p>
                 )}
 
                 {ship?.status === "uploading" && (

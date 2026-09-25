@@ -199,6 +199,12 @@ Der Sendeplan darunter zeigt alle 10 Zeiten als Liste — kein Kalender. Intern 
 Rechnung in `computeSlots()` (`src/lib/zernio.ts`); im Modus `EIGENE ZEIT` wird die Zeit über den
 **Unit-Index** gewählt (Video 01 bekommt Zeile 01 usw.), in den anderen Modi in Sende-Reihenfolge.
 
+Die Panel-Modi sind gleichzeitig die **Vorbelegung des Sendeplan-Dialogs** (Kapitel 2.6): Was hier
+steht, ist im Dialog vorausgewählt — pro Post lässt sich dort aber jederzeit etwas anderes nehmen
+(z. B. Panel steht auf `SOFORT`, dieser eine Post geht trotzdem `HEUTE 20:00` in die Queue).
+Die Liste im Panel zeigt verplante Units deshalb mit ihrer **echten** Zeit aus dem Dialog
+(`N × VERPLANT`, wartende mit `· QUEUE`).
+
 Zusätzlich: **„Als Entwurf speichern"** → `isDraft: true`. Landet als Draft in Zernio, wird nicht
 veröffentlicht. Perfekt, um den kompletten Weg einmal ohne Risiko durchzutesten.
 
@@ -212,21 +218,61 @@ Zwischen **jeden beiden** Videos wartet die Fabrik exakt **3 Sekunden**
 
 * beim Batch-Versand (alle 10 mit einem Klick),
 * wenn du mehrere Einzelversande kurz hintereinander klickst — alles landet in derselben
-  Warteschlange und wird mit 3 s Abstand abgearbeitet,
+  Warteschlange und wird mit 3 s Abstand abgearbeitet (auch wenn du einen Plan **während** einer
+  laufenden Queue im Dialog bestätigst: er wird angehängt),
 * unabhängig vom Modus (auch bei „SOFORT").
 
 Im Panel und in der Status-Pille unten läuft der Countdown sichtbar mit: `PAUSE 2.4 s`.
 **STOP** bricht die Warteschlange ab (das gerade laufende Video wird noch fertig gesendet).
 
-### 2.6 Einzelversand vs. alle 10
+### 2.6 Einzelversand vs. alle 10 — der Sendeplan-Dialog
+
+Kein Versand mehr „blind": **jeder** Klick auf einen Versand-Button öffnet zuerst ein Fenster, in
+dem du den Sendeplan für genau diesen Post (oder den ganzen Stapel) festlegst.
 
 * **Einzelnes Video:** in der Output Bay (`05`) hat jede fertige Karte einen Button **→ ZERNIO**.
-  Er erscheint erst, sobald das Video gerendert ist. Danach zeigt er den Zernio-Status
-  (`GEPLANT`, `VERÖFFENTLICHT`, `ENTWURF`, `FEHLER`).
+  Er erscheint erst, sobald das Video gerendert ist. Klick → **Sendeplan-Dialog** für dieses eine
+  Video. Danach zeigt der Button den Zernio-Status (`IN WARTESCHLEIFE`, `GEPLANT`,
+  `VERÖFFENTLICHT`, `ENTWURF`, `FEHLER`) plus die geplante Zeit (`HEUTE 20:00 · QUEUE`).
 * **Alle 10:** im Panel `06` der Button **`10 Videos → Zernio`** (bzw. die Anzahl der noch nicht
-  gesendeten). Er nimmt alle gerenderten Videos in die Warteschlange.
+  gesendeten) → derselbe Dialog, nur für den ganzen Stapel.
+* **Alle gleichzeitig in die Queue:** der Button **`Alle 10 → Queue`** daneben reiht **ohne**
+  Dialog alle fertigen Videos auf einmal in die Warteschlange ein — jedes bekommt reihum den
+  nächsten freien Sendeplatz des Panel-Sendeplans (Standard 06:00 & 20:00 Uhr).
 * Unter „Einzelversand" findest du zusätzlich alle fertigen Units als Chips — praktisch, wenn du
-  nur 3 von 10 rausschicken willst.
+  nur 3 von 10 rausschicken willst. Auch diese Chips öffnen den Dialog.
+
+#### Was der Dialog kann
+
+| Auswahl | Einzelner Post | Alle Videos |
+| --- | --- | --- |
+| **SOFORT** | `publishNow: true` | jedes Video direkt nach dem Upload (mit 3 s Takt) |
+| **EIGENE ZEIT** | frei planen: `datetime-local` plus Chips `+15 MIN` · `+1 STD` · `+3 STD` · `20 UHR` · `06 UHR` | — (dafür **FLEXIBEL**) |
+| **IN DIE QUEUE** / **ALLE → QUEUE** | nächster freier Sendeplatz; Position per `−`/`+` bis zu 9 Plätze verschiebbar | alle reihum auf die nächsten freien Plätze |
+| **FLEXIBEL** | — | Startzeit + Abstand (15 Min … 1 Tag) |
+| **EIGENE ZEITEN** | — | die 10 Zeiten aus dem Panel `06` → Modus `EIGENE ZEIT` (Zeit pro Unit-Index), Button **IM PANEL BEARBEITEN** springt direkt dorthin |
+
+Zusätzlich im Dialog:
+
+* **POST-DETAILS (OPTIONAL)** — Titel und Hashtags **nur für diesen Versand**; leer lassen = die
+  Werte aus dem Panel `06`.
+* **ALS ENTWURF SPEICHERN** — wie im Panel, wird beim Senden ins Panel übernommen.
+* **GEHT AN** — deine verbundenen Zernio-Accounts (bzw. die Warnung, wenn Key oder Account fehlt;
+  dann ist der Send-Button gesperrt).
+* **DEIN SENDEPLAN** — die echte Liste „01 → HEUTE 20:00 · 02 → MORGEN 06:00 …" für genau die
+  ausgewählten Videos, inklusive `(VORGEZOGEN)` bei Zeiten in der Vergangenheit.
+* `Esc` = schließen, `Strg/Cmd + Enter` = senden, Klick auf den Hintergrund = schließen.
+
+#### Queue-Verhalten
+
+* Der Plan wird **beim Einreihen einmal** in feste Slots übersetzt und hängt am Queue-Eintrag
+  (`ShipQueueEntry` in `src/lib/shipPlan.ts`) — dadurch kann jeder Post seine eigene Zeit haben,
+  auch wenn mehrere Dialoge nacheinander bestätigt werden.
+* **Keine Doppelbuchung:** liegt ein Slot schon in der Queue, rutscht der neue Post automatisch um
+  5 Minuten (bzw. um den gewählten Abstand) nach hinten — im Plan als `(VERSCHOBEN)` markiert.
+* **„IN DIE QUEUE"** zählt die bereits wartenden Queue-Plätze mit und reiht sich dahinter ein.
+* Während die Queue läuft, bleiben die Versand-Buttons aktiv: ein neuer Plan wird einfach
+  **angehängt**. **STOP** bricht die Warteschlange ab und setzt die wartenden Units zurück.
 
 ### 2.7 Titel, Caption, Hashtags
 
